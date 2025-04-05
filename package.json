@@ -1,16 +1,27 @@
 {
   "dependencies": {
+    "@prisma/client": "^6.5.0",
     "axios": "^1.8.1",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "ffmpeg": "^0.0.4",
+    "ffmpeg-static": "^5.2.0",
+    "fluent-ffmpeg": "^2.1.3",
     "jsonwebtoken": "^9.0.2",
-    "mongoose": "^8.11.0",
+    "mongodb": "^6.15.0",
+    "mongoose": "^8.13.2",
     "mysql2": "^3.12.0",
     "node-cache": "^5.1.2",
     "nodemon": "^3.1.9",
+    "play-dl": "^1.9.7",
+    "puppeteer": "^24.6.0",
     "sequelize": "^6.37.5",
+    "sequelize-auto": "^0.8.8",
+    "tough-cookie": "^5.1.2",
+    "youtube-dl-exec": "^3.0.20",
+    "ytdl-core": "^4.11.5",
     "ytsr": "^3.8.4"
   },
   "type": "module",
@@ -25,5 +36,8 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC"
+  "license": "ISC",
+  "devDependencies": {
+    "prisma": "^6.5.0"
+  }
 }

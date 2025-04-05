@@ -2,21 +2,33 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
-import sequelize  from "./models/index.js";
 import userRoutes from "./routes/userRoutes.js";
+import audioRoutes from "./routes/audioRoutes.js";
 import searchRoutes from "./routes/searchRoutes.js";
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import mongoose from "mongoose";
 
+// Load .env
 dotenv.config();
+
 const app = express();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Static files
+const uploadsDir = join(__dirname, 'uploads');
+const controllerUploadsDir = join(__dirname, 'controller/uploads');
+app.use('/uploads', express.static(uploadsDir));
+app.use('controller/uploads', express.static(controllerUploadsDir));
 
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// CORS Middleware
 const corsOptions = {
-  origin: ["http://localhost:3000"],
+  origin: ["http://localhost:8081"],
   methods: ["GET", "POST", "PUT", "DELETE"],
   credentials: true,
 };
@@ -24,34 +36,24 @@ app.use(cors(corsOptions));
 
 // Routes
 app.use("/api/users", userRoutes);
-// app.use("/api/auth", authRoutes); // Contoh route (tambahkan jika ada)
 app.use("/api", searchRoutes);
+app.use("/api/audio", audioRoutes); // <- pastikan audioRoutes aktif kalau kamu pakai
 
-// Error Handling Middleware
+
+// Error handler
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({ message: "Internal Server Error", error: err.message });
 });
 
-// Start the server
-const port = 5000;
+// Koneksi MongoDB dan jalankan server
+const PORT = process.env.PORT || 3000;
 
-// Coba koneksi ke database sebelum menjalankan server
-const startServer = async () => {
-  try {
-    await sequelize.authenticate();
-    console.log("✅ Database connected successfully.");
-
-    await sequelize.sync(); // Pastikan tabel dibuat jika belum ada
-    console.log("✅ Database synchronized.");
-
-    app.listen(port, () => {
-      console.log(`🚀 Server is running on port ${port}`);
+mongoose.connect(process.env.MONGODB_URI)
+  .then(() => {
+    console.log('✅ MongoDB connected');
+    app.listen(PORT, () => {
+      console.log(`🚀 Server is running on http://localhost:${PORT}`);
     });
-  } catch (error) {
-    console.error("❌ Database connection failed:", error.message);
-    process.exit(1); // Stop server jika koneksi gagal
-  }
-};
-
-startServer();
+  })
+  .catch(err => console.error('❌ MongoDB connection error:', err));

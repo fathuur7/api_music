@@ -4,7 +4,7 @@ export async function search(req, res) {
     const query = req.query.q;
     // Extract configuration options from query parameters
     const options = {
-        limit: parseInt(req.query.limit) || 10,
+        limit: parseInt(req.query.limit) || 20,
         minDuration: parseInt(req.query.minDuration) || 0,
         maxDuration: parseInt(req.query.maxDuration) || 600,
         filterLive: req.query.filterLive !== 'false',
