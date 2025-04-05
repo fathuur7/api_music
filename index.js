@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import sequelize  from "./models/index.js";
 import userRoutes from "./routes/userRoutes.js";
+import searchRoutes from "./routes/searchRoutes.js";
 
 dotenv.config();
 const app = express();
@@ -22,8 +23,9 @@ const corsOptions = {
 app.use(cors(corsOptions));
 
 // Routes
-app.use("api/users", userRoutes);
+app.use("/api/users", userRoutes);
 // app.use("/api/auth", authRoutes); // Contoh route (tambahkan jika ada)
+app.use("/api", searchRoutes);
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
@@ -32,7 +34,7 @@ app.use((err, req, res, next) => {
 });
 
 // Start the server
-const port = process.env.PORT || 5000;
+const port = 5000;
 
 // Coba koneksi ke database sebelum menjalankan server
 const startServer = async () => {

@@ -8,8 +8,10 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.11.0",
     "mysql2": "^3.12.0",
+    "node-cache": "^5.1.2",
     "nodemon": "^3.1.9",
-    "sequelize": "^6.37.5"
+    "sequelize": "^6.37.5",
+    "ytsr": "^3.8.4"
   },
   "type": "module",
   "name": "api_music",
