@@ -46,8 +46,26 @@ app.use((err, req, res, next) => {
   res.status(500).json({ message: "Internal Server Error", error: err.message });
 });
 
+app.use('/health', (req, res) => {
+  res.status(200).send('OK');
+})
+
+app.use('/', (req, res) => {
+  res.status(200).send('hello world');
+})
+
+// make to know for client path
+app.use((req, res, next) => {
+  res.locals.clientPath = __dirname;
+  console.log('Client path:', res.locals.clientPath);
+  next();
+});
+
+
+
+
 // Koneksi MongoDB dan jalankan server
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || '0.0.0.0';
 
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => {

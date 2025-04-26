@@ -10,9 +10,6 @@ import {
 
 const router = express.Router();
 
-router.get('/health', (req, res) => {
-    res.json({ status: 'OK' });
-});
 // Endpoint untuk mengkonversi video YouTube menjadi audio
 router.post('/convert', convertVideoToAudio);
 
