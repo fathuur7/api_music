@@ -3,11 +3,8 @@
     "@clerk/clerk-sdk-node": "^5.1.6",
     "@prisma/client": "^6.5.0",
     "axios": "^1.8.1",
-<<<<<<< HEAD
     "cloudinary": "^2.6.0",
-=======
     "bcrypt": "^5.1.1",
->>>>>>> 24d4022ddea133508a9baab9efd2ebf4ec3406fb
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",

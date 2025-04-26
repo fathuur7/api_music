@@ -6,6 +6,9 @@ import Audio from '../models/audio.js';
 import os from 'os';
 import fs from 'fs';
 import { v2 as cloudinary } from 'cloudinary';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 // Configure Cloudinary
 cloudinary.config({ 
