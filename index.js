@@ -40,7 +40,7 @@ app.use(cookieParser());
 
 // CORS setup
 app.use(cors({
-  origin: ["http://localhost:8081"],
+  origin: ["http://localhost:8081",'*'],
   methods: ["GET", "POST", "PUT", "DELETE"],
   credentials: true,
 }));
@@ -48,14 +48,14 @@ app.use(cors({
 
 const publicPaths = ['/webhooks/clerk'];
 
-app.use((req, res, next) => {
-  if (publicPaths.some(path => req.path.includes(path))) {
-    return next(); // Skip Clerk middleware for webhooks
-  }
-  return ClerkExpressWithAuth({
-    secretKey: process.env.CLERK_SECRET_KEY,
-  })(req, res, next);
-});
+// app.use((req, res, next) => {
+//   if (publicPaths.some(path => req.path.includes(path))) {
+//     return next(); // Skip Clerk middleware for webhooks
+//   }
+//   return ClerkExpressWithAuth({
+//     secretKey: process.env.CLERK_SECRET_KEY,
+//   })(req, res, next);
+// });
 
 // ========== Routes ========== //
 // app.use('/clerk', webhookRoutes);
