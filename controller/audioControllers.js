@@ -3,28 +3,19 @@ import ytdl from 'ytdl-core';
 import ffmpeg from 'fluent-ffmpeg';
 import path from 'path';
 import Audio from '../models/audio.js';
-import { fileURLToPath } from 'url';
-import fs from 'fs';
 import os from 'os';
+import fs from 'fs';
 import { v2 as cloudinary } from 'cloudinary';
-import dotenv from 'dotenv';
-
-
-// Load .env
-dotenv.config();
-
 
 // Configure Cloudinary
 cloudinary.config({ 
-  cloud_name: process.env.CLOUD_NAME, 
-  api_key: process.env.API_KEY, 
-  api_secret: process.env.API_SECRET,
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME, 
+  api_key: process.env.CLOUDINARY_API_KEY, 
+  api_secret: process.env.CLOUDINARY_API_SECRET,
   secure: true
 });
 
-
-
-// Use temp directory for processing
+// Use OS temp directory which is writable even in serverless environments
 const getTempFilePath = (filename) => {
   return path.join(os.tmpdir(), filename);
 };
@@ -71,7 +62,7 @@ export const convertVideoToAudio = async (req, res) => {
                     videoData.url.split('youtu.be/')[1]?.split('?')[0] || 
                     Date.now().toString();
     
-    // Path for temporary storage
+    // Path for temporary storage in OS temp directory (which is writable)
     const outputPath = getTempFilePath(`${videoId}.mp3`);
     
     let videoTitle = videoData.title || `Audio-${videoId}`;
@@ -136,7 +127,12 @@ export const convertVideoToAudio = async (req, res) => {
     const cloudinaryResult = await uploadToCloudinary(outputPath);
     
     // Delete the temporary file
-    fs.unlinkSync(outputPath);
+    try {
+      fs.unlinkSync(outputPath);
+    } catch (deleteError) {
+      // Just log if we can't delete, doesn't affect functionality
+      console.warn("Couldn't delete temp file:", deleteError.message);
+    }
     
     // Save audio data to database
     const newAudio = new Audio({
@@ -234,8 +230,8 @@ export const DownloadAudioWithOptions = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Audio tidak ditemukan' });
     }
     
-    // Path for temporary output file
-    const outputFilename = `${audio.title.replace(/[<>:"/\\|?*]+/g, '')}-${quality}.${format}`;
+    // Path for temporary output file in OS temp directory
+    const outputFilename = `${videoId}-${quality}.${format}`;
     const outputPath = getTempFilePath(outputFilename);
     
     // Use ytdl to download with requested format/quality
@@ -255,8 +251,8 @@ export const DownloadAudioWithOptions = async (req, res) => {
         ffmpeg(stream)
           .audioBitrate(bitrate)
           .format(format)
-          .on('error', (err) => reject(err))
-          .on('end', () => resolve())
+          .on('error', reject)
+          .on('end', resolve)
           .save(outputPath);
       });
       
@@ -264,7 +260,11 @@ export const DownloadAudioWithOptions = async (req, res) => {
       const cloudinaryResult = await uploadToCloudinary(outputPath, 'youtube-audios-custom');
       
       // Clean up temporary file
-      fs.unlinkSync(outputPath);
+      try {
+        fs.unlinkSync(outputPath);
+      } catch (deleteError) {
+        console.warn("Couldn't delete temp file:", deleteError.message);
+      }
       
       // Redirect to the download URL
       const downloadUrl = cloudinaryResult.secure_url + "?fl_attachment=true";
