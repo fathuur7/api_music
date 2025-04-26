@@ -5,22 +5,50 @@ import path from 'path';
 import Audio from '../models/audio.js';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
-import { dirname, join } from 'path';
+import os from 'os';
+import { v2 as cloudinary } from 'cloudinary';
+import dotenv from 'dotenv';
 
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+// Load .env
+dotenv.config();
 
 
-const uploadsDir = join(__dirname, 'uploads');
+// Configure Cloudinary
+cloudinary.config({ 
+  cloud_name: process.env.CLOUD_NAME, 
+  api_key: process.env.API_KEY, 
+  api_secret: process.env.API_SECRET,
+  secure: true
+});
 
-// Buat folder untuk menyimpan audio jika belum ada
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir);
-}
 
-// Endpoint untuk mengkonversi video YouTube menjadi audio
-export const convertVideoToAudio =  async (req, res) => {
+
+// Use temp directory for processing
+const getTempFilePath = (filename) => {
+  return path.join(os.tmpdir(), filename);
+};
+
+// Helper function to upload file to Cloudinary
+const uploadToCloudinary = (filePath, folder = 'youtube-audios') => {
+  return new Promise((resolve, reject) => {
+    cloudinary.uploader.upload(
+      filePath, 
+      { 
+        resource_type: 'auto',
+        folder: folder,
+        use_filename: true
+      }, 
+      (error, result) => {
+        if (error) reject(error);
+        else resolve(result);
+      }
+    );
+  });
+};
+
+// Endpoint to convert YouTube video to audio
+export const convertVideoToAudio = async (req, res) => {
   const { videoData } = req.body;
   
   if (!videoData || !videoData.url) {
@@ -28,7 +56,7 @@ export const convertVideoToAudio =  async (req, res) => {
   }
   
   try {
-    // Cek apakah audio sudah ada di database
+    // Check if audio already exists in database
     const existingAudio = await Audio.findOne({ originalUrl: videoData.url });
     if (existingAudio) {
       return res.json({
@@ -38,14 +66,13 @@ export const convertVideoToAudio =  async (req, res) => {
       });
     }
 
-    // Extract video ID dari URL
+    // Extract video ID from URL
     const videoId = videoData.url.split('v=')[1]?.split('&')[0] || 
                     videoData.url.split('youtu.be/')[1]?.split('?')[0] || 
                     Date.now().toString();
     
-    // Path untuk menyimpan audio
-    const outputPath = path.join(uploadsDir, `${videoId}.mp3`);
-    const audioUrl = `../uploads/${videoId}.mp3`;
+    // Path for temporary storage
+    const outputPath = getTempFilePath(`${videoId}.mp3`);
     
     let videoTitle = videoData.title || `Audio-${videoId}`;
     let thumbnailUrl = videoData.thumbnail || '';
@@ -53,7 +80,7 @@ export const convertVideoToAudio =  async (req, res) => {
     let durationInSeconds = videoData.durationInSeconds || 0;
     let artist = videoData.author || 'Unknown';
 
-    // Coba metode 1: ytdl-core
+    // Try method 1: ytdl-core
     try {
       const info = await ytdl.getInfo(videoData.url);
       videoTitle = info.videoDetails.title;
@@ -76,18 +103,18 @@ export const convertVideoToAudio =  async (req, res) => {
           .save(outputPath);
       });
     } 
-    // Jika ytdl-core gagal, gunakan youtube-dl sebagai fallback
+    // If ytdl-core fails, use youtube-dl as fallback
     catch (ytdlError) {
       console.log("ytdl-core failed, trying youtube-dl-exec instead:", ytdlError.message);
       
       await youtubeDl(videoData.url, {
         extractAudio: true,
         audioFormat: 'mp3',
-        audioQuality: 0, // 0 adalah kualitas tertinggi
+        audioQuality: 0, // 0 is highest quality
         output: outputPath
       });
       
-      // Ambil informasi video menggunakan youtube-dl-exec
+      // Get video info using youtube-dl-exec
       const videoInfo = await youtubeDl(videoData.url, {
         dumpSingleJson: true,
         noWarnings: true,
@@ -105,11 +132,18 @@ export const convertVideoToAudio =  async (req, res) => {
       }
     }
     
-    // Simpan data audio ke database
+    // Upload the audio file to Cloudinary
+    const cloudinaryResult = await uploadToCloudinary(outputPath);
+    
+    // Delete the temporary file
+    fs.unlinkSync(outputPath);
+    
+    // Save audio data to database
     const newAudio = new Audio({
       title: videoTitle,
       originalUrl: videoData.url,
-      audioUrl: audioUrl,
+      audioUrl: cloudinaryResult.secure_url,
+      publicId: cloudinaryResult.public_id,
       thumbnail: thumbnailUrl,
       duration: duration,
       durationInSeconds: durationInSeconds,
@@ -128,21 +162,24 @@ export const convertVideoToAudio =  async (req, res) => {
     console.error('Error:', error);
     res.status(500).json({ success: false, message: 'Gagal memproses video', error: error.message });
   }
-}
+};
 
-// Endpoint untuk mendapatkan semua audio yang tersimpan
+// Endpoint to get all stored audio
 export const GetAllAudios = async (req, res) => {
   try {
     const audios = await Audio.find().sort({ createdAt: -1 });
     res.json({ success: true, audios });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Gagal mengambil data audio', 
-      at : 'getAllAudios',
-      error: error.message });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Gagal mengambil data audio', 
+      at: 'getAllAudios',
+      error: error.message 
+    });
   }
-}
+};
 
-// Endpoint untuk mendapatkan audio berdasarkan ID
+// Endpoint to get audio by ID
 export const GetAudioById = async (req, res) => {
   try {
     const audio = await Audio.findById(req.params.id);
@@ -151,66 +188,29 @@ export const GetAudioById = async (req, res) => {
     }
     res.json({ success: true, audio });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Gagal mengambil data audio', error: error.message,
-      at : 'getAudioById'
+    res.status(500).json({ 
+      success: false, 
+      message: 'Gagal mengambil data audio', 
+      error: error.message,
+      at: 'getAudioById'
     });
   }
-}
+};
 
-
-// Endpoint untuk mendownload audio berdasarkan ID
+// Endpoint to download audio by ID
 export const DownloadAudioById = async (req, res) => {
   try {
-    // Cari audio berdasarkan ID
+    // Find audio by ID
     const audio = await Audio.findById(req.params.id);
     if (!audio) {
       return res.status(404).json({ success: false, message: 'Audio tidak ditemukan' });
     }
     
-    // Dapatkan path file audio
-
-    const audioPath = path.join(__dirname, "/uploads", `${audio.audioUrl}`);
+    // For Cloudinary, we can simply redirect to the audio URL
+    // Add ?fl_attachment parameter to force download
+    const downloadUrl = audio.audioUrl + "?fl_attachment=true";
+    res.redirect(downloadUrl);
     
-    console.log('Audio path:', audioPath);
-    // Periksa apakah folder uploads ada
-    if (!fs.existsSync(uploadsDir)) {
-      return res.status(500).json({
-        success: false,
-        message: 'Folder uploads tidak ditemukan di server',
-        at: 'downloadAudioById'
-      });
-    }
-    
-    // Periksa apakah file exist
-    if (!fs.existsSync(audioPath)) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'File audio tidak ditemukan di server',
-        at: 'downloadAudioById'
-      });
-    }
-
-    // Set header untuk download
-    const filename = encodeURIComponent(audio.title + '.mp3');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Type', 'audio/mpeg');
-    
-    // Stream file ke response
-    const fileStream = fs.createReadStream(audioPath);
-    fileStream.pipe(res);
-    
-    // Handle error streaming
-    fileStream.on('error', (error) => {
-      console.error('Error streaming file:', error);
-      if (!res.headersSent) {
-        res.status(500).json({ 
-          success: false, 
-          message: 'Gagal streaming file audio', 
-          error: error.message,
-          at: 'downloadAudioById'
-        });
-      }
-    });
   } catch (error) {
     console.error('Error downloading audio:', error);
     res.status(500).json({ 
@@ -222,23 +222,23 @@ export const DownloadAudioById = async (req, res) => {
   }
 };
 
-// Fungsi untuk download audio dengan format dan kualitas tertentu
+// Function to download audio with specific format and quality
 export const DownloadAudioWithOptions = async (req, res) => {
   try {
     const { id } = req.params;
     const { format = 'mp3', quality = 'high' } = req.query;
     
-    // Cari audio berdasarkan ID
+    // Find audio by ID
     const audio = await Audio.findById(id);
     if (!audio) {
       return res.status(404).json({ success: false, message: 'Audio tidak ditemukan' });
     }
     
-    // Path untuk file output
+    // Path for temporary output file
     const outputFilename = `${audio.title.replace(/[<>:"/\\|?*]+/g, '')}-${quality}.${format}`;
-    const outputPath = path.join(uploadsDir, outputFilename);
+    const outputPath = getTempFilePath(outputFilename);
     
-    // Gunakan ytdl untuk mendownload ulang dengan format/kualitas yang diminta
+    // Use ytdl to download with requested format/quality
     const ytdlOptions = {
       quality: quality === 'high' ? 'highestaudio' : 'lowestaudio',
       filter: 'audioonly'
@@ -247,11 +247,11 @@ export const DownloadAudioWithOptions = async (req, res) => {
     try {
       const stream = ytdl(audio.originalUrl, ytdlOptions);
       
-      // Set bit rate berdasarkan kualitas
+      // Set bit rate based on quality
       const bitrate = quality === 'high' ? 320 : (quality === 'medium' ? 192 : 128);
       
       // Use ffmpeg to convert to requested format with specified quality
-      const ffmpegProcess = new Promise((resolve, reject) => {
+      await new Promise((resolve, reject) => {
         ffmpeg(stream)
           .audioBitrate(bitrate)
           .format(format)
@@ -260,43 +260,22 @@ export const DownloadAudioWithOptions = async (req, res) => {
           .save(outputPath);
       });
       
-      await ffmpegProcess;
+      // Upload to Cloudinary
+      const cloudinaryResult = await uploadToCloudinary(outputPath, 'youtube-audios-custom');
       
-      // Set header for download
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(outputFilename)}"`);
-      res.setHeader('Content-Type', format === 'mp3' ? 'audio/mpeg' : 'audio/ogg');
+      // Clean up temporary file
+      fs.unlinkSync(outputPath);
       
-      // Stream file to response
-      const fileStream = fs.createReadStream(outputPath);
-      fileStream.pipe(res);
-      
-      // Clean up the temporary file after streaming
-      fileStream.on('end', () => {
-        fs.unlink(outputPath, (err) => {
-          if (err) console.error('Error deleting temporary file:', err);
-        });
-      });
-      
-      fileStream.on('error', (error) => {
-        console.error('Error streaming file:', error);
-        if (!res.headersSent) {
-          res.status(500).json({ success: false, message: 'Gagal streaming file audio', error: error.message });
-        }
-      });
+      // Redirect to the download URL
+      const downloadUrl = cloudinaryResult.secure_url + "?fl_attachment=true";
+      res.redirect(downloadUrl);
       
     } catch (ytdlError) {
       console.error('Error downloading with ytdl:', ytdlError);
       
-      // Fallback to existing file if download fails
-      const fallbackPath = path.join(__dirname, '..', audio.audioUrl);
-      
-      if (fs.existsSync(fallbackPath)) {
-        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(audio.title)}.mp3"`);
-        res.setHeader('Content-Type', 'audio/mpeg');
-        fs.createReadStream(fallbackPath).pipe(res);
-      } else {
-        throw new Error('Gagal mengunduh audio dan file backup tidak tersedia');
-      }
+      // Fallback to existing file
+      const downloadUrl = audio.audioUrl + "?fl_attachment=true";
+      res.redirect(downloadUrl);
     }
     
   } catch (error) {
@@ -310,7 +289,7 @@ export const DownloadAudioWithOptions = async (req, res) => {
   }
 };
 
-// Endpoint untuk melacak progress download
+// Endpoint to track download progress
 export const TrackDownloadProgress = async (req, res) => {
   const { id } = req.params;
   
@@ -320,7 +299,7 @@ export const TrackDownloadProgress = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Audio tidak ditemukan' });
     }
     
-    // Implementasi SSE (Server-Sent Events) untuk streaming progress
+    // Implement SSE (Server-Sent Events) for streaming progress
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
@@ -328,9 +307,9 @@ export const TrackDownloadProgress = async (req, res) => {
     const downloadId = Date.now().toString();
     let progress = 0;
     
-    // Simpan referensi ke interval
+    // Save reference to interval
     const progressInterval = setInterval(() => {
-      // Simulasi progress (dalam implementasi nyata, ini akan mengambil dari status download sebenarnya)
+      // Simulate progress (in real implementation, this would get actual download status)
       progress += 5;
       
       if (progress <= 100) {
