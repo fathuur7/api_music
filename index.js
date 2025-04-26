@@ -5,14 +5,9 @@ import cookieParser from "cookie-parser";
 import mongoose from "mongoose";
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-
-import { ClerkExpressWithAuth } from "@clerk/clerk-sdk-node";
-
-import userRoutes from "./routes/userRoutes.js";
 import audioRoutes from "./routes/audioRoutes.js";
 import searchRoutes from "./routes/searchRoutes.js";
-import webhookRoutes from "./routes/webhookRoutes.js";
-import { DiffieHellman } from "crypto";
+
 
 // Load .env
 dotenv.config();
@@ -58,8 +53,6 @@ const publicPaths = ['/webhooks/clerk'];
 // });
 
 // ========== Routes ========== //
-// app.use('/clerk', webhookRoutes);
-app.use('/api/users', userRoutes);
 app.use('/api/audio', audioRoutes);
 app.use('/api', searchRoutes);
 
