@@ -10,19 +10,24 @@ import {
 
 const router = express.Router();
 
-// Endpoint untuk mengkonversi video YouTube menjadi audio
+
+// Rute untuk mengkonversi video ke audio
 router.post('/convert', convertVideoToAudio);
 
-// Endpoint untuk mendapatkan semua audio yang tersimpan
-router.get('/audios', GetAllAudios);
+// Rute untuk mendapatkan semua audio
+router.get('/', GetAllAudios);
 
-// Endpoint untuk mendapatkan audio berdasarkan ID
-router.get('/audios/:id',  GetAudioById);
+// Rute untuk mendapatkan satu audio berdasarkan ID
+router.get('/:id', GetAudioById);
 
-
+// Rute untuk mendownload audio berdasarkan ID
 router.get('/download/:id', DownloadAudioById);
+
+// Rute untuk mendownload audio dengan opsi format dan kualitas
 router.get('/download/:id/options', DownloadAudioWithOptions);
-router.get('/download/:id/progress', TrackDownloadProgress);
+
+// Rute untuk tracking progress download
+router.get('/track/:id', TrackDownloadProgress);
 
 
 
