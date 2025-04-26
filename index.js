@@ -56,11 +56,6 @@ const publicPaths = ['/webhooks/clerk'];
 app.use('/api/audio', audioRoutes);
 app.use('/api', searchRoutes);
 
-// routes / hello world
-app.use('/', (req, res) => {
-  res.status(200).json({ message: "Hello World" });
-  console.log('Hello World');
-})
 
 // ========== Error Handler ========== //
 app.use((err, req, res, next) => {
@@ -73,9 +68,6 @@ app.use('/health', (req, res) => {
   res.status(200).send('OK');
 })
 
-app.use('/', (req, res) => {
-  res.status(200).send('hello world');
-})
 
 // make to know for client path
 app.use((req, res, next) => {
