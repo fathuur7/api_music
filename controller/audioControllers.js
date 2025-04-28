@@ -1,4 +1,3 @@
-import youtubeDl from 'youtube-dl-exec';
 import ytdl from 'ytdl-core';
 import ffmpeg from 'fluent-ffmpeg';
 import path from 'path';
@@ -17,8 +16,6 @@ cloudinary.config({
   api_secret: process.env.API_SECRET,
   secure: true
 });
-
-console.log('Cloudinary config:', cloudinary.config());
 
 // Use OS temp directory which is writable even in serverless environments
 const getTempFilePath = (filename) => {
@@ -76,57 +73,40 @@ export const convertVideoToAudio = async (req, res) => {
     let durationInSeconds = videoData.durationInSeconds || 0;
     let artist = videoData.author || 'Unknown';
 
-    // Try method 1: ytdl-core
-    try {
-      const info = await ytdl.getInfo(videoData.url);
-      videoTitle = info.videoDetails.title;
-      thumbnailUrl = info.videoDetails.thumbnails[0].url;
-      duration = info.videoDetails.lengthSeconds;
-      durationInSeconds = parseInt(info.videoDetails.lengthSeconds);
-      artist = info.videoDetails.author.name;
-      
-      const stream = ytdl(videoData.url, { 
-        quality: 'highestaudio',
-        filter: 'audioonly'
-      });
-      
-      await new Promise((resolve, reject) => {
-        ffmpeg(stream)
-          .audioBitrate(128)
-          .format('mp3')
-          .on('error', reject)
-          .on('end', resolve)
-          .save(outputPath);
-      });
-    } 
-    // If ytdl-core fails, use youtube-dl as fallback
-    catch (ytdlError) {
-      console.log("ytdl-core failed, trying youtube-dl-exec instead:", ytdlError.message);
-      
-      await youtubeDl(videoData.url, {
-        extractAudio: true,
-        audioFormat: 'mp3',
-        audioQuality: 0, // 0 is highest quality
-        output: outputPath
-      });
-      
-      // Get video info using youtube-dl-exec
-      const videoInfo = await youtubeDl(videoData.url, {
-        dumpSingleJson: true,
-        noWarnings: true,
-        noCallHome: true,
-        preferFreeFormats: true,
-        youtubeSkipDashManifest: true,
-      });
-      
-      if (videoInfo) {
-        videoTitle = videoInfo.title || videoTitle;
-        thumbnailUrl = videoInfo.thumbnail || thumbnailUrl;
-        duration = videoInfo.duration_string || duration;
-        durationInSeconds = videoInfo.duration || durationInSeconds;
-        artist = videoInfo.uploader || artist;
-      }
+    // Use ytdl-core to get video info and download audio
+    const info = await ytdl.getInfo(videoData.url);
+    
+    // Extract video details
+    videoTitle = info.videoDetails.title;
+    thumbnailUrl = info.videoDetails.thumbnails[0].url;
+    duration = info.videoDetails.lengthSeconds;
+    durationInSeconds = parseInt(info.videoDetails.lengthSeconds);
+    artist = info.videoDetails.author.name;
+    
+    // Get audio formats ordered by quality
+    const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
+    if (audioFormats.length === 0) {
+      throw new Error('No audio formats available for this video');
     }
+    
+    // Get highest quality audio
+    const stream = ytdl.downloadFromInfo(info, { 
+      quality: 'highestaudio',
+      filter: 'audioonly'
+    });
+    
+    // Convert to mp3 using ffmpeg
+    await new Promise((resolve, reject) => {
+      ffmpeg(stream)
+        .audioBitrate(128)
+        .format('mp3')
+        .on('error', (err) => {
+          console.error('FFmpeg error:', err);
+          reject(err);
+        })
+        .on('end', resolve)
+        .save(outputPath);
+    });
     
     // Upload the audio file to Cloudinary
     const cloudinaryResult = await uploadToCloudinary(outputPath);
@@ -160,8 +140,13 @@ export const convertVideoToAudio = async (req, res) => {
     });
       
   } catch (error) {
-    console.error('Error:', error);
-    res.status(500).json({ success: false, message: 'Gagal memproses video', error: error.message });
+    console.error('Error converting video to audio:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Gagal memproses video', 
+      error: error.message,
+      detail: 'Kesalahan saat mengunduh atau memproses audio'
+    });
   }
 };
 
@@ -235,6 +220,14 @@ export const DownloadAudioWithOptions = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Audio tidak ditemukan' });
     }
     
+    // Get video info from original URL
+    const info = await ytdl.getInfo(audio.originalUrl);
+    
+    // Generate a unique filename
+    const videoId = audio.originalUrl.split('v=')[1]?.split('&')[0] || 
+                    audio.originalUrl.split('youtu.be/')[1]?.split('?')[0] || 
+                    Date.now().toString();
+                    
     // Path for temporary output file in OS temp directory
     const outputFilename = `${videoId}-${quality}.${format}`;
     const outputPath = getTempFilePath(outputFilename);
@@ -245,46 +238,53 @@ export const DownloadAudioWithOptions = async (req, res) => {
       filter: 'audioonly'
     };
     
+    // Download and convert
+    const stream = ytdl.downloadFromInfo(info, ytdlOptions);
+    
+    // Set bit rate based on quality
+    const bitrate = quality === 'high' ? 320 : (quality === 'medium' ? 192 : 128);
+    
+    // Use ffmpeg to convert to requested format with specified quality
+    await new Promise((resolve, reject) => {
+      ffmpeg(stream)
+        .audioBitrate(bitrate)
+        .format(format)
+        .on('error', (err) => {
+          console.error('FFmpeg error during custom download:', err);
+          reject(err);
+        })
+        .on('end', resolve)
+        .save(outputPath);
+    });
+    
+    // Upload to Cloudinary
+    const cloudinaryResult = await uploadToCloudinary(outputPath, 'youtube-audios-custom');
+    
+    // Clean up temporary file
     try {
-      const stream = ytdl(audio.originalUrl, ytdlOptions);
-      
-      // Set bit rate based on quality
-      const bitrate = quality === 'high' ? 320 : (quality === 'medium' ? 192 : 128);
-      
-      // Use ffmpeg to convert to requested format with specified quality
-      await new Promise((resolve, reject) => {
-        ffmpeg(stream)
-          .audioBitrate(bitrate)
-          .format(format)
-          .on('error', reject)
-          .on('end', resolve)
-          .save(outputPath);
-      });
-      
-      // Upload to Cloudinary
-      const cloudinaryResult = await uploadToCloudinary(outputPath, 'youtube-audios-custom');
-      
-      // Clean up temporary file
-      try {
-        fs.unlinkSync(outputPath);
-      } catch (deleteError) {
-        console.warn("Couldn't delete temp file:", deleteError.message);
-      }
-      
-      // Redirect to the download URL
-      const downloadUrl = cloudinaryResult.secure_url + "?fl_attachment=true";
-      res.redirect(downloadUrl);
-      
-    } catch (ytdlError) {
-      console.error('Error downloading with ytdl:', ytdlError);
-      
-      // Fallback to existing file
-      const downloadUrl = audio.audioUrl + "?fl_attachment=true";
-      res.redirect(downloadUrl);
+      fs.unlinkSync(outputPath);
+    } catch (deleteError) {
+      console.warn("Couldn't delete temp file:", deleteError.message);
     }
     
+    // Redirect to the download URL
+    const downloadUrl = cloudinaryResult.secure_url + "?fl_attachment=true";
+    res.redirect(downloadUrl);
+    
   } catch (error) {
-    console.error('Error:', error);
+    console.error('Error with custom download:', error);
+    
+    try {
+      // Fallback to existing file if there's an error
+      const audio = await Audio.findById(req.params.id);
+      if (audio) {
+        const downloadUrl = audio.audioUrl + "?fl_attachment=true";
+        return res.redirect(downloadUrl);
+      }
+    } catch (fallbackError) {
+      console.error('Error with fallback download:', fallbackError);
+    }
+    
     res.status(500).json({ 
       success: false, 
       message: 'Gagal memproses permintaan download', 
