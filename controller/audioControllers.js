@@ -285,7 +285,7 @@ export const convertVideoToAudio = async (req, res) => {
       audioUrl: 'pending_upload'
     });
     
-    await processingAudio.save();ss
+    await processingAudio.save();
     
     await processingAudio.save();
     
