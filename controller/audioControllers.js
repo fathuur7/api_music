@@ -279,8 +279,13 @@ export const convertVideoToAudio = async (req, res) => {
       thumbnail: videoInfo.thumbnail || '',
       duration: videoInfo.duration || '',
       durationInSeconds: videoInfo.durationInSeconds || 0,
-      artist: videoInfo.author || 'Unknown'
+      artist: videoInfo.author || 'Unknown',
+      // Add default values for required fields
+      publicId: 'pending_upload',
+      audioUrl: 'pending_upload'
     });
+    
+    await processingAudio.save();ss
     
     await processingAudio.save();
     
