@@ -4,8 +4,11 @@ import Audio from '../models/audio.js';
 import os from 'os';
 import fs from 'fs';
 import { v2 as cloudinary } from 'cloudinary';
+import dotenv from 'dotenv';
 import axios from 'axios';
 import { promisify } from 'util';
+
+dotenv.config();
 
 // Configure Cloudinary
 cloudinary.config({ 
@@ -40,7 +43,7 @@ const uploadToCloudinary = (filePath, folder = 'youtube-audios') => {
 
 // Extract video ID from YouTube URL
 const extractVideoId = (url) => {
-  // Pola untuk mengekstrak ID video YouTube dari berbagai format URL
+  // Patterns to extract YouTube video ID from various URL formats
   const patterns = [
     /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i,
     /^([^"&?\/\s]{11})$/i
@@ -53,7 +56,7 @@ const extractVideoId = (url) => {
     }
   }
   
-  // Coba ekstrak ID dengan memecah URL
+  // Try extracting ID by splitting URL
   if (url.includes('v=')) {
     return url.split('v=')[1]?.split('&')[0];
   } else if (url.includes('youtu.be/')) {
@@ -68,7 +71,7 @@ const getVideoInfo = async (videoUrl) => {
   try {
     const videoId = extractVideoId(videoUrl);
     
-    if (!videoId) throw new Error('Invalid YouTube URL');
+    if (!videoId) throw new Error('URL YouTube tidak valid');
     
     // First try with oEmbed API - very reliable and lightweight
     try {
@@ -255,7 +258,7 @@ export const convertVideoToAudio = async (req, res) => {
       console.log("Audio already available in database");
       return res.json({
         success: true,
-        message: 'Audio already available',
+        message: 'Audio sudah tersedia',
         audio: existingAudio
       });
     }
@@ -268,7 +271,7 @@ export const convertVideoToAudio = async (req, res) => {
     const videoInfo = await getVideoInfo(videoData.url);
     console.log("Video info obtained:", videoInfo.title);
     
-    // Create a DB entry to track processing status (optional)
+    // Create a DB entry to track processing status
     const processingAudio = new Audio({
       title: videoInfo.title || `Audio-${videoId}`,
       originalUrl: videoData.url,
@@ -279,20 +282,20 @@ export const convertVideoToAudio = async (req, res) => {
       artist: videoInfo.author || 'Unknown'
     });
     
+    await processingAudio.save();
+    
     // For serverless environment, return early with processing status
     // This prevents timeout errors on Vercel
     res.json({
       success: true,
-      message: 'Video conversion started',
+      message: 'Konversi video dimulai',
       status: 'processing',
       processingId: processingAudio._id,
-      estimatedTime: '30-60 seconds'
+      estimatedTime: '30-60 detik'
     });
     
     // Continue processing asynchronously (won't block response)
     try {
-      await processingAudio.save();
-      
       // Path for temporary storage in OS temp directory
       const outputPath = getTempFilePath(`${videoId}.mp3`);
       
@@ -302,7 +305,7 @@ export const convertVideoToAudio = async (req, res) => {
       
       // Check if file exists and has content
       if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
-        throw new Error('Failed to generate audio file');
+        throw new Error('Gagal menghasilkan file audio');
       }
       
       console.log("Audio downloaded successfully, uploading to Cloudinary...");
@@ -337,28 +340,28 @@ export const convertVideoToAudio = async (req, res) => {
     console.error('Error converting video to audio:', initialError);
     
     // Provide more specific error message based on common problems
-    let errorMessage = 'Failed to process video';
-    let errorDetail = 'Error downloading or processing audio';
+    let errorMessage = 'Gagal memproses video';
+    let errorDetail = 'Kesalahan saat mengunduh atau memproses audio';
     let errorCode = 500;
     
     if (initialError.message.includes('410')) {
-      errorMessage = 'YouTube API unavailable (Error 410)';
-      errorDetail = 'YouTube has changed their API. Try again later or use a different video URL.';
+      errorMessage = 'YouTube API tidak tersedia (Error 410)';
+      errorDetail = 'YouTube telah mengubah API mereka. Coba lagi nanti atau gunakan URL video lain.';
     } else if (initialError.message.includes('sign in') || initialError.message.includes('login')) {
-      errorMessage = 'Video requires login';
-      errorDetail = 'This video requires YouTube login and cannot be downloaded.';
+      errorMessage = 'Video memerlukan login';
+      errorDetail = 'Video ini memerlukan login YouTube dan tidak dapat diunduh.';
       errorCode = 403;
     } else if (initialError.message.includes('copyright')) {
-      errorMessage = 'Copyright issue';
-      errorDetail = 'This video has copyright restrictions.';
+      errorMessage = 'Masalah hak cipta';
+      errorDetail = 'Video ini memiliki pembatasan hak cipta.';
       errorCode = 403;
     } else if (initialError.message.includes('private')) {
-      errorMessage = 'Video is private';
-      errorDetail = 'This video is set to private by its owner and cannot be accessed.';
+      errorMessage = 'Video bersifat privat';
+      errorDetail = 'Video ini dibuat privat oleh pemiliknya dan tidak dapat diakses.';
       errorCode = 403;
     } else if (initialError.message.includes('tidak valid') || initialError.message.includes('invalid')) {
-      errorMessage = 'Invalid YouTube URL';
-      errorDetail = 'Please check the URL and try again.';
+      errorMessage = 'URL YouTube tidak valid';
+      errorDetail = 'Silakan periksa URL dan coba lagi.';
       errorCode = 400;
     }
     
@@ -371,6 +374,39 @@ export const convertVideoToAudio = async (req, res) => {
   }
 };
 
+// Endpoint to get all stored audio
+export const GetAllAudios = async (req, res) => {
+  try {
+    const audios = await Audio.find().sort({ createdAt: -1 });
+    res.json({ success: true, audios });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Gagal mengambil data audio', 
+      at: 'getAllAudios',
+      error: error.message 
+    });
+  }
+};
+
+// Endpoint to get audio by ID
+export const GetAudioById = async (req, res) => {
+  try {
+    const audio = await Audio.findById(req.params.id);
+    if (!audio) {
+      return res.status(404).json({ success: false, message: 'Audio tidak ditemukan' });
+    }
+    res.json({ success: true, audio });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Gagal mengambil data audio', 
+      error: error.message,
+      at: 'getAudioById'
+    });
+  }
+};
+
 // Endpoint to check conversion status
 export const checkConversionStatus = async (req, res) => {
   try {
@@ -378,7 +414,7 @@ export const checkConversionStatus = async (req, res) => {
     
     const audio = await Audio.findById(id);
     if (!audio) {
-      return res.status(404).json({ success: false, message: 'Audio not found' });
+      return res.status(404).json({ success: false, message: 'Audio tidak ditemukan' });
     }
     
     res.json({
@@ -390,10 +426,194 @@ export const checkConversionStatus = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'Failed to check conversion status',
+      message: 'Gagal memeriksa status konversi',
       error: error.message
     });
   }
 };
 
-// Rest of your code for other endpoints...
+// Endpoint to download audio by ID
+export const DownloadAudioById = async (req, res) => {
+  try {
+    // Find audio by ID
+    const audio = await Audio.findById(req.params.id);
+    if (!audio) {
+      return res.status(404).json({ success: false, message: 'Audio tidak ditemukan' });
+    }
+    
+    // For Cloudinary, we can simply redirect to the audio URL
+    // Add ?fl_attachment parameter to force download
+    const downloadUrl = audio.audioUrl + "?fl_attachment=true";
+    res.redirect(downloadUrl);
+    
+  } catch (error) {
+    console.error('Error downloading audio:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Gagal mendownload audio', 
+      error: error.message,
+      at: 'downloadAudioById'
+    });
+  }
+};
+
+// Function to download audio with specific format and quality
+export const DownloadAudioWithOptions = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { format = 'mp3', quality = 'high' } = req.query;
+    
+    // Find audio by ID
+    const audio = await Audio.findById(id);
+    if (!audio) {
+      return res.status(404).json({ success: false, message: 'Audio tidak ditemukan' });
+    }
+    
+    // For now, just use the existing audio from Cloudinary
+    // In a future version, you could implement format and quality conversions
+    let downloadUrl = audio.audioUrl;
+    
+    // Add format transformation parameters for Cloudinary if needed
+    if (format === 'mp3' || format === 'wav' || format === 'ogg') {
+      // Add format parameter to URL
+      downloadUrl = downloadUrl.replace(/\.[^/.]+$/, `.${format}`);
+    }
+    
+    // Add quality parameters if Cloudinary supports it
+    if (quality === 'high') {
+      downloadUrl += "?quality=80";
+    } else if (quality === 'medium') {
+      downloadUrl += "?quality=60";
+    } else if (quality === 'low') {
+      downloadUrl += "?quality=40";
+    }
+    
+    // Add force download parameter
+    downloadUrl += downloadUrl.includes('?') ? "&fl_attachment=true" : "?fl_attachment=true";
+    
+    res.redirect(downloadUrl);
+    
+  } catch (error) {
+    console.error('Error with custom download:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Gagal memproses permintaan download', 
+      error: error.message,
+      at: 'downloadAudioWithOptions'
+    });
+  }
+};
+
+// Endpoint to track download progress
+export const TrackDownloadProgress = async (req, res) => {
+  const { id } = req.params;
+  
+  try {
+    const audio = await Audio.findById(id);
+    if (!audio) {
+      return res.status(404).json({ success: false, message: 'Audio tidak ditemukan' });
+    }
+    
+    // Check if already completed
+    if (audio.status === 'completed') {
+      return res.json({
+        success: true,
+        status: 'completed',
+        progress: 100,
+        audio
+      });
+    }
+    
+    // If failed, return error
+    if (audio.status === 'failed') {
+      return res.json({
+        success: false,
+        status: 'failed',
+        error: audio.errorMessage || 'Konversi gagal'
+      });
+    }
+    
+    // Implement SSE (Server-Sent Events) for streaming progress
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    
+    // Initial status
+    res.write(`data: ${JSON.stringify({ 
+      id: audio._id, 
+      progress: 0, 
+      status: 'processing'
+    })}\n\n`);
+    
+    // Set up polling to check status
+    const pollInterval = setInterval(async () => {
+      try {
+        // Get latest status from database
+        const updatedAudio = await Audio.findById(id);
+        
+        if (!updatedAudio) {
+          clearInterval(pollInterval);
+          res.write(`data: ${JSON.stringify({ 
+            error: 'Audio not found', 
+            status: 'failed'
+          })}\n\n`);
+          return res.end();
+        }
+        
+        if (updatedAudio.status === 'completed') {
+          // If completed, send 100% and end
+          res.write(`data: ${JSON.stringify({ 
+            id: updatedAudio._id, 
+            progress: 100, 
+            status: 'completed',
+            audio: updatedAudio
+          })}\n\n`);
+          clearInterval(pollInterval);
+          return res.end();
+        } else if (updatedAudio.status === 'failed') {
+          // If failed, send error and end
+          res.write(`data: ${JSON.stringify({ 
+            id: updatedAudio._id, 
+            status: 'failed',
+            error: updatedAudio.errorMessage || 'Konversi gagal'
+          })}\n\n`);
+          clearInterval(pollInterval);
+          return res.end();
+        } else {
+          // If still processing, send progress update
+          // Simulate progress based on time (in real implementation, this would be based on actual progress)
+          const elapsedTime = (Date.now() - updatedAudio.createdAt) / 1000; // seconds
+          const estimatedProgress = Math.min(95, Math.floor(elapsedTime / 0.5));
+          
+          res.write(`data: ${JSON.stringify({ 
+            id: updatedAudio._id, 
+            progress: estimatedProgress, 
+            status: 'processing'
+          })}\n\n`);
+        }
+      } catch (error) {
+        console.error('Error in progress polling:', error);
+        clearInterval(pollInterval);
+        res.write(`data: ${JSON.stringify({ 
+          error: error.message, 
+          status: 'failed'
+        })}\n\n`);
+        res.end();
+      }
+    }, 2000); // Poll every 2 seconds
+    
+    // Handle client disconnect
+    res.on('close', () => {
+      clearInterval(pollInterval);
+    });
+    
+  } catch (error) {
+    console.error('Error tracking download:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Gagal melacak progress download', 
+      error: error.message,
+      at: 'trackDownloadProgress'
+    });
+  }
+};
