@@ -161,18 +161,23 @@ const downloadWithYoutubeDl = async (videoUrl, outputPath) => {
 };
 
 // Perbaikan untuk fungsi downloadAudio
-
-
-
-// Perbaikan fungsi downloadAudio dengan fokus pada ytdl-core
+// Modified downloadAudio function with a fallback that doesn't require FFmpeg
 const downloadAudio = async (videoUrl, videoInfo, outputPath) => {
   console.log("Memulai proses download audio...");
   
-  // Metode 1: Gunakan ytdl-core dengan konfigurasi yang lebih baik
+  // Check if FFmpeg is available
+  const ffmpegAvailable = await commandExists('ffmpeg').catch(() => false);
+  
+  if (!ffmpegAvailable) {
+    console.log("FFmpeg tidak tersedia, menggunakan metode direct download...");
+    return await downloadAudioWithoutFFmpeg(videoUrl, videoInfo, outputPath);
+  }
+  
+  // Original method 1: Use ytdl-core with better configuration
   try {
     console.log("Mencoba dengan ytdl-core dan konfigurasi yang dioptimalkan...");
     
-    // Konfigurasi yang lebih tangguh untuk ytdl-core
+    // Robust configuration for ytdl-core
     const options = {
       quality: 'highestaudio',
       filter: 'audioonly',
@@ -192,22 +197,22 @@ const downloadAudio = async (videoUrl, videoInfo, outputPath) => {
     };
     
     return new Promise((resolve, reject) => {
-      // Menggunakan stream untuk menangani video
+      // Use stream to handle video
       const stream = ytdl(videoUrl, options);
       
-      // Tangani error pada stream
+      // Handle errors on stream
       stream.on('error', (err) => {
         console.error("Error pada stream ytdl:", err.message);
         reject(err);
       });
       
-      // Atur timeout untuk mencegah hanging
+      // Set timeout to prevent hanging
       const streamTimeout = setTimeout(() => {
         stream.destroy();
         reject(new Error('Timeout stream setelah 60 detik'));
       }, 60000);
       
-      // Gunakan ffmpeg untuk memproses stream ke MP3
+      // Use ffmpeg to process stream to MP3
       ffmpeg(stream)
         .audioCodec('libmp3lame')
         .audioBitrate(128)
@@ -230,119 +235,169 @@ const downloadAudio = async (videoUrl, videoInfo, outputPath) => {
   } catch (ytdlError) {
     console.error('Download ytdl-core gagal:', ytdlError.message);
     
-    // Metode 2: Coba dengan format langsung dari info video
-    try {
-      console.log("Mencoba dengan download format langsung...");
-      
-      if (!videoInfo.formats || videoInfo.formats.length === 0) {
-        throw new Error("Tidak ada format yang tersedia");
-      }
-      
-      // Cari format audio (urutkan berdasarkan kualitas)
+    // If ytdl-core fails, try downloading without FFmpeg
+    return await downloadAudioWithoutFFmpeg(videoUrl, videoInfo, outputPath);
+  }
+};
+
+// New function to download audio without requiring FFmpeg
+const downloadAudioWithoutFFmpeg = async (videoUrl, videoInfo, outputPath) => {
+  try {
+    console.log("Mencoba download audio tanpa FFmpeg...");
+    
+    // Try to get an audio format from the video info
+    if (videoInfo.formats && videoInfo.formats.length > 0) {
+      // Find audio formats and sort by quality
       const audioFormats = videoInfo.formats
         .filter(f => f.mimeType && f.mimeType.includes('audio/'))
         .sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0));
       
-      if (audioFormats.length === 0) {
-        throw new Error("Tidak ada format audio yang ditemukan");
+      // If we have audio formats, use the best one
+      if (audioFormats.length > 0) {
+        const audioUrl = audioFormats[0].url;
+        if (audioUrl) {
+          console.log("Format audio ditemukan, mencoba direct download...");
+          
+          // Download the audio file directly
+          const response = await axios({
+            method: 'GET',
+            url: audioUrl,
+            responseType: 'stream',
+            timeout: 60000,
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+          });
+          
+          // Write directly to file without FFmpeg
+          return new Promise((resolve, reject) => {
+            const writer = fs.createWriteStream(outputPath);
+            
+            response.data.pipe(writer);
+            
+            writer.on('finish', () => {
+              console.log("Direct download berhasil!");
+              resolve(true);
+            });
+            
+            writer.on('error', (err) => {
+              console.error("Error menulis file:", err.message);
+              reject(err);
+            });
+          });
+        }
       }
-      
-      // Dapatkan URL audio dengan kualitas tertinggi
-      const audioUrl = audioFormats[0].url;
-      if (!audioUrl) {
-        throw new Error("URL audio tidak ditemukan");
-      }
-      
-      console.log("Format audio ditemukan, mencoba download...");
-      
-      // Download file audio
-      const response = await axios({
-        method: 'GET',
-        url: audioUrl,
-        responseType: 'stream',
-        timeout: 60000,
+    }
+    
+    // If previous approach fails, try with ytdl direct to file
+    console.log("Mencoba dengan ytdl direct download...");
+    
+    // Try with standard audio format options
+    const options = {
+      quality: 'highestaudio',
+      filter: 'audioonly',
+      highWaterMark: 1 << 25,
+      requestOptions: {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      }
+    };
+    
+    return new Promise((resolve, reject) => {
+      const stream = ytdl(videoUrl, options);
+      const writer = fs.createWriteStream(outputPath);
+      
+      let streamError = null;
+      
+      stream.on('error', (err) => {
+        streamError = err;
+        console.error("Error pada stream ytdl:", err.message);
+      });
+      
+      writer.on('error', (err) => {
+        console.error("Error menulis file:", err.message);
+        reject(err);
+      });
+      
+      writer.on('finish', () => {
+        if (streamError) {
+          reject(streamError);
+        } else {
+          console.log("Direct ytdl download berhasil!");
+          resolve(true);
         }
       });
       
-      // Konversi ke MP3 dengan ffmpeg
-      return new Promise((resolve, reject) => {
-        ffmpeg(response.data)
-          .audioCodec('libmp3lame')
-          .audioBitrate(128)
-          .format('mp3')
-          .on('error', (err) => {
-            console.error('Error FFmpeg dengan URL langsung:', err.message);
-            reject(err);
-          })
-          .on('end', () => {
-            console.log("Download URL langsung berhasil!");
-            resolve(true);
-          })
-          .save(outputPath);
-      });
-    } catch (directError) {
-      console.error("Download URL langsung gagal:", directError.message);
+      // Pipe the stream directly to file
+      stream.pipe(writer);
       
-      // Metode 3: Coba dengan pendekatan alternatif ytdl
-      try {
-        console.log("Mencoba dengan ytdl stream alternatif...");
-        
-        // Konfigurasi alternatif
-        const altOptions = {
-          quality: 'lowestaudio', // Coba dengan kualitas lebih rendah
-          filter: format => format.container === 'webm' || format.container === 'mp4',
-          highWaterMark: 1 << 24, // 16MB buffer
-          requestOptions: {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Safari/605.1.15',
-            }
+      // Set timeout to prevent hanging
+      const streamTimeout = setTimeout(() => {
+        stream.destroy();
+        writer.end();
+        reject(new Error('Timeout stream setelah 60 detik'));
+      }, 60000);
+      
+      stream.on('end', () => {
+        clearTimeout(streamTimeout);
+      });
+    });
+  } catch (error) {
+    console.error("Download tanpa FFmpeg gagal:", error.message);
+    
+    // One last attempt with a different ytdl configuration
+    try {
+      console.log("Mencoba dengan konfigurasi ytdl alternatif...");
+      
+      const altOptions = {
+        quality: 'lowestaudio', // Try with lower quality
+        filter: format => format.container === 'webm' || format.container === 'mp4',
+        highWaterMark: 1 << 24, // 16MB buffer
+        requestOptions: {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15'
           }
-        };
+        }
+      };
+      
+      return new Promise((resolve, reject) => {
+        const altStream = ytdl(videoUrl, altOptions);
+        const outputFile = fs.createWriteStream(outputPath);
         
-        return new Promise((resolve, reject) => {
-          // Coba dengan stream alternatif
-          const altStream = ytdl(videoUrl, altOptions);
-          
-          altStream.on('error', (err) => {
-            console.error("Error pada stream ytdl alternatif:", err.message);
-            reject(err);
-          });
-          
-          const outputFile = fs.createWriteStream(outputPath);
-          
-          outputFile.on('error', (err) => {
-            console.error("Error menulis file:", err.message);
-            reject(err);
-          });
-          
-          outputFile.on('finish', () => {
+        altStream.on('error', (err) => {
+          console.error("Error pada stream ytdl alternatif:", err.message);
+          reject(err);
+        });
+        
+        outputFile.on('error', (err) => {
+          console.error("Error menulis file:", err.message);
+          reject(err);
+        });
+        
+        outputFile.on('finish', () => {
+          // Check if file has content
+          const stats = fs.statSync(outputPath);
+          if (stats.size > 0) {
             console.log("Download alternatif berhasil!");
             resolve(true);
-          });
-          
-          // Gunakan pipe langsung untuk format yang kompatibel
-          // atau gunakan ffmpeg untuk format lainnya
-          ffmpeg(altStream)
-            .audioCodec('libmp3lame')
-            .audioBitrate(128)
-            .format('mp3')
-            .on('error', (err) => {
-              console.error('Error FFmpeg dengan ytdl alternatif:', err.message);
-              reject(err);
-            })
-            .pipe(outputFile, { end: true });
+          } else {
+            reject(new Error("File yang dihasilkan kosong"));
+          }
         });
-      } catch (altError) {
-        console.error("Semua metode download gagal:", altError.message);
-        throw new Error("Semua metode download gagal");
-      }
+        
+        // Direct pipe to file
+        altStream.pipe(outputFile);
+      });
+    } catch (altError) {
+      console.error("Semua metode download gagal:", altError.message);
+      throw new Error("Semua metode download gagal");
     }
   }
 };
 
-// Endpoint to convert YouTube video to audio
+
+// Perbaikan fungsi downloadAudio dengan fokus pada ytdl-core
 // Endpoint untuk mengkonversi video YouTube ke audio
 export const convertVideoToAudio = async (req, res) => {
   const { videoData } = req.body;
