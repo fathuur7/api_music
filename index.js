@@ -27,11 +27,6 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// console.log('Clerk Middleware initialized', {
-//   secretKey: process.env.CLERK_SECRET_KEY,
-//   publishableKey: process.env.CLERK_PUBLISHABLE_KEY,
-//   webhookSecret: process.env.CLERK_WEBHOOK_SECRET
-// });
 
 // CORS setup
 app.use(cors({
@@ -41,16 +36,6 @@ app.use(cors({
 }));
 
 
-const publicPaths = ['/webhooks/clerk'];
-
-// app.use((req, res, next) => {
-//   if (publicPaths.some(path => req.path.includes(path))) {
-//     return next(); // Skip Clerk middleware for webhooks
-//   }
-//   return ClerkExpressWithAuth({
-//     secretKey: process.env.CLERK_SECRET_KEY,
-//   })(req, res, next);
-// });
 
 // ========== Routes ========== //
 app.use('/api/audio', audioRoutes);
@@ -66,6 +51,10 @@ app.use((err, req, res, next) => {
 
 app.use('/health', (req, res) => {
   res.status(200).send('OK');
+})
+
+app.use('/' , (req, res) => {
+  res.status(200).send('Server is running');
 })
 
 
