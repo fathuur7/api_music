@@ -1,4 +1,4 @@
-import { video_info, stream, YouTubeVideo } from 'play-dl';
+import ytdl from 'ytdl-core';
 import ffmpeg from 'fluent-ffmpeg';
 import path from 'path';
 import Audio from '../models/audio.js';
@@ -7,7 +7,10 @@ import fs from 'fs';
 import { v2 as cloudinary } from 'cloudinary';
 import dotenv from 'dotenv';
 import axios from 'axios';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 
+const execAsync = promisify(exec);
 dotenv.config();
 
 // Configure Cloudinary
@@ -41,7 +44,7 @@ const uploadToCloudinary = (filePath, folder = 'youtube-audios') => {
   });
 };
 
-// Helper function to get video info (with multiple fallbacks)
+// Helper function to get video info using unofficial API
 const getVideoInfo = async (videoUrl) => {
   try {
     // Extract video ID
@@ -50,22 +53,22 @@ const getVideoInfo = async (videoUrl) => {
     
     if (!videoId) throw new Error('Invalid YouTube URL');
     
-    // Method 1: Try play-dl
+    // First try ytdl-core
     try {
-      const info = await video_info(videoUrl);
-      
+      const info = await ytdl.getInfo(videoId);
       return {
-        title: info.video_details.title,
-        thumbnail: info.video_details.thumbnails.pop().url,
-        duration: info.video_details.durationInSec.toString(),
-        durationInSeconds: info.video_details.durationInSec,
-        author: info.video_details.channel?.name || 'Unknown',
-        videoDetails: info.video_details
+        title: info.videoDetails.title,
+        thumbnail: info.videoDetails.thumbnails[0].url,
+        duration: info.videoDetails.lengthSeconds,
+        durationInSeconds: parseInt(info.videoDetails.lengthSeconds),
+        author: info.videoDetails.author.name,
+        formats: info.formats,
+        videoId
       };
-    } catch (playDlError) {
-      console.log("play-dl failed to get info, using alternative method:", playDlError.message);
+    } catch (ytdlError) {
+      console.log("ytdl-core failed to get info, using alternative method:", ytdlError.message);
       
-      // Method 2: Use YouTube's oEmbed API
+      // Alternative method using YouTube's Iframe API data
       try {
         const response = await axios.get(`https://www.youtube.com/oembed?url=${videoUrl}&format=json`);
         
@@ -73,21 +76,21 @@ const getVideoInfo = async (videoUrl) => {
           title: response.data.title,
           thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
           author: response.data.author_name,
-          duration: "Unknown", 
+          duration: "Unknown", // Unfortunately this API doesn't provide duration
           durationInSeconds: 0,
-          videoId: videoId
+          videoId
         };
       } catch (oembedError) {
         console.log("YouTube oEmbed API failed:", oembedError.message);
         
-        // Method 3: Use basic metadata from URL
+        // Last resort: Use basic info from video ID
         return {
           title: `YouTube Audio - ${videoId}`,
           thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
           author: 'Unknown',
           duration: "Unknown",
           durationInSeconds: 0,
-          videoId: videoId
+          videoId
         };
       }
     }
@@ -97,61 +100,218 @@ const getVideoInfo = async (videoUrl) => {
   }
 };
 
-// Download video using play-dl
-const downloadAudio = async (videoUrl, outputPath) => {
+// Helper function to check if command exists
+const commandExists = async (command) => {
   try {
-    // Method 1: Try play-dl
-    try {
-      const audioStream = await stream(videoUrl, { quality: 140 });
+    await execAsync(`which ${command}`);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// Function to download using yt-dlp if available
+const downloadWithYtDlp = async (videoUrl, outputPath) => {
+  if (await commandExists('yt-dlp')) {
+    await execAsync(`yt-dlp -x --audio-format mp3 -o "${outputPath}" "${videoUrl}"`);
+    return true;
+  }
+  return false;
+};
+
+// Function to download using youtube-dl if available
+const downloadWithYoutubeDl = async (videoUrl, outputPath) => {
+  if (await commandExists('youtube-dl')) {
+    await execAsync(`youtube-dl -x --audio-format mp3 -o "${outputPath}" "${videoUrl}"`);
+    return true;
+  }
+  return false;
+};
+
+// Function to download using public YouTube to MP3 API
+const downloadWithPublicApi = async (videoId, outputPath) => {
+  try {
+    // Try using public API (need to implement with actual service)
+    // This is an example implementation - you would need to use a real service
+    // NOTE: Most free public APIs limit usage or have ads, so use with caution
+    
+    // Example with a fictional API:
+    const apiUrl = `https://youtube-mp3-download-api.example.com/dl?id=${videoId}`;
+    
+    const response = await axios.get(apiUrl);
+    
+    if (response.data && response.data.link) {
+      // Download from the provided link
+      const fileResponse = await axios({
+        method: 'get',
+        url: response.data.link,
+        responseType: 'stream'
+      });
+      
+      const writer = fs.createWriteStream(outputPath);
       
       return new Promise((resolve, reject) => {
-        ffmpeg(audioStream.stream)
-          .audioBitrate(128)
-          .format('mp3')
-          .on('error', (err) => {
-            console.error('FFmpeg error:', err);
-            reject(err);
-          })
-          .on('end', resolve)
-          .save(outputPath);
+        fileResponse.data.pipe(writer);
+        writer.on('finish', () => resolve(true));
+        writer.on('error', () => reject(false));
       });
-    } catch (playDlError) {
-      console.log("play-dl failed to download audio, using alternative method:", playDlError.message);
-      
-      // Method 2: Try ytdl-core
-      try {
-        const ytdl = await import('ytdl-core');
-        
-        return new Promise((resolve, reject) => {
-          ytdl.default(videoUrl, { 
-            quality: 'highestaudio',
-            filter: 'audioonly' 
-          })
-          .pipe(fs.createWriteStream(outputPath))
-          .on('finish', resolve)
-          .on('error', reject);
-        });
-      } catch (ytdlError) {
-        console.log("ytdl-core failed:", ytdlError.message);
-        
-        // Method 3: Try another alternative like youtube-dl-exec
-        try {
-          const youtubeDl = await import('youtube-dl-exec');
-          await youtubeDl.default(videoUrl, {
-            extractAudio: true,
-            audioFormat: 'mp3',
-            output: outputPath
-          });
-          return;
-        } catch (youtubeDlError) {
-          console.log("youtube-dl-exec failed:", youtubeDlError.message);
-          throw new Error("All download methods failed");
+    }
+    
+    return false;
+  } catch (error) {
+    console.error("API download failed:", error.message);
+    return false;
+  }
+};
+
+// Try downloading directly using audio format URL from ytdl-core info
+const downloadWithDirectUrl = async (videoInfo, outputPath) => {
+  try {
+    if (!videoInfo.formats || videoInfo.formats.length === 0) {
+      return false;
+    }
+    
+    // Find audio format
+    const audioFormats = videoInfo.formats.filter(f => f.mimeType && f.mimeType.includes('audio/'));
+    
+    if (audioFormats.length === 0) {
+      return false;
+    }
+    
+    // Sort by quality (audio bitrate)
+    audioFormats.sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0));
+    
+    // Get the highest quality audio URL
+    const audioUrl = audioFormats[0].url;
+    
+    if (!audioUrl) {
+      return false;
+    }
+    
+    // Download the audio file
+    const response = await axios({
+      method: 'GET',
+      url: audioUrl,
+      responseType: 'stream',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+      }
+    });
+    
+    // Convert to MP3
+    return new Promise((resolve, reject) => {
+      ffmpeg(response.data)
+        .audioBitrate(128)
+        .format('mp3')
+        .on('error', (err) => {
+          console.error('FFmpeg error in direct format URL:', err);
+          resolve(false);
+        })
+        .on('end', () => resolve(true))
+        .save(outputPath);
+    });
+  } catch (error) {
+    console.error("Direct URL download failed:", error.message);
+    return false;
+  }
+};
+
+// Multi-method downloader that tries different approaches
+const downloadAudio = async (videoUrl, videoInfo, outputPath) => {
+  console.log("Attempting download with multiple methods...");
+  
+  // Method 1: Try ytdl-core with improved options
+  try {
+    console.log("Trying ytdl-core with improved options...");
+    const options = {
+      quality: 'highestaudio',
+      filter: 'audioonly', 
+      highWaterMark: 1 << 25, // 32MB buffer
+      requestOptions: {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5',
+          'Cookie': '', // Optional: You could rotate cookies if needed
+          'Connection': 'keep-alive',
+          'Sec-Fetch-Dest': 'document',
+          'Sec-Fetch-Mode': 'navigate',
+          'Sec-Fetch-Site': 'none',
+          'Sec-Fetch-User': '?1',
+          'Upgrade-Insecure-Requests': '1'
         }
       }
+    };
+    
+    const stream = ytdl(videoUrl, options);
+    
+    await new Promise((resolve, reject) => {
+      ffmpeg(stream)
+        .audioBitrate(128)
+        .format('mp3')
+        .on('error', (err) => {
+          console.error('FFmpeg error with ytdl-core:', err);
+          reject(err);
+        })
+        .on('end', resolve)
+        .save(outputPath);
+    });
+    
+    console.log("ytdl-core download successful!");
+    return true;
+  } catch (ytdlError) {
+    console.error('ytdl-core download failed:', ytdlError.message);
+    
+    // Method 2: Try direct URL if available
+    console.log("Trying direct format URL download...");
+    const directUrlSuccess = await downloadWithDirectUrl(videoInfo, outputPath);
+    
+    if (directUrlSuccess) {
+      console.log("Direct URL download successful!");
+      return true;
     }
-  } catch (error) {
-    console.error("Error in downloadAudio:", error);
-    throw error;
+    
+    // Method 3: Try yt-dlp if available
+    console.log("Trying yt-dlp download...");
+    try {
+      const ytDlpSuccess = await downloadWithYtDlp(videoUrl, outputPath);
+      
+      if (ytDlpSuccess) {
+        console.log("yt-dlp download successful!");
+        return true;
+      }
+    } catch (ytDlpError) {
+      console.error("yt-dlp download failed:", ytDlpError.message);
+    }
+    
+    // Method 4: Try youtube-dl if available
+    console.log("Trying youtube-dl download...");
+    try {
+      const youtubeDlSuccess = await downloadWithYoutubeDl(videoUrl, outputPath);
+      
+      if (youtubeDlSuccess) {
+        console.log("youtube-dl download successful!");
+        return true;
+      }
+    } catch (youtubeDlError) {
+      console.error("youtube-dl download failed:", youtubeDlError.message);
+    }
+    
+    // Method 5: Try public API service
+    console.log("Trying public API download...");
+    try {
+      const apiSuccess = await downloadWithPublicApi(videoInfo.videoId, outputPath);
+      
+      if (apiSuccess) {
+        console.log("Public API download successful!");
+        return true;
+      }
+    } catch (apiError) {
+      console.error("Public API download failed:", apiError.message);
+    }
+    
+    // All methods failed
+    throw new Error("All download methods failed");
   }
 };
 
@@ -194,17 +354,16 @@ export const convertVideoToAudio = async (req, res) => {
     const durationInSeconds = videoInfo.durationInSeconds || videoData.durationInSeconds || 0;
     const artist = videoInfo.author || videoData.author || 'Unknown';
     
-    console.log("Downloading audio...");
-    // Download audio using play-dl
-    await downloadAudio(videoData.url, outputPath);
-    console.log("Audio downloaded to:", outputPath);
+    console.log("Starting download process...");
+    // Try all download methods
+    await downloadAudio(videoData.url, videoInfo, outputPath);
     
     // Check if file exists and has content
     if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
       throw new Error('Failed to generate audio file');
     }
     
-    console.log("Uploading to Cloudinary...");
+    console.log("Audio downloaded, uploading to Cloudinary...");
     // Upload the audio file to Cloudinary
     const cloudinaryResult = await uploadToCloudinary(outputPath);
     console.log("Uploaded to Cloudinary:", cloudinaryResult.secure_url);
@@ -212,11 +371,12 @@ export const convertVideoToAudio = async (req, res) => {
     // Delete the temporary file
     try {
       fs.unlinkSync(outputPath);
+      console.log("Temporary file deleted");
     } catch (deleteError) {
       console.warn("Couldn't delete temp file:", deleteError.message);
     }
     
-    console.log("Saving to database...");
+    console.log("Saving audio to database...");
     // Save audio data to database
     const newAudio = new Audio({
       title: videoTitle,
@@ -230,7 +390,7 @@ export const convertVideoToAudio = async (req, res) => {
     });
     
     await newAudio.save();
-    console.log("Audio saved to database!");
+    console.log("Audio saved to database successfully");
     
     res.json({
       success: true,
@@ -240,11 +400,30 @@ export const convertVideoToAudio = async (req, res) => {
       
   } catch (error) {
     console.error('Error converting video to audio:', error);
+    
+    // Provide more specific error messages based on common issues
+    let errorMessage = 'Gagal memproses video';
+    let errorDetail = 'Kesalahan saat mengunduh atau memproses audio';
+    
+    if (error.message.includes('410')) {
+      errorMessage = 'YouTube API tidak tersedia (Error 410)';
+      errorDetail = 'YouTube telah mengubah API mereka. Coba lagi nanti atau gunakan URL video lain.';
+    } else if (error.message.includes('sign in')) {
+      errorMessage = 'Video memerlukan login';
+      errorDetail = 'Video ini memerlukan login YouTube dan tidak dapat diunduh.';
+    } else if (error.message.includes('copyright')) {
+      errorMessage = 'Masalah hak cipta';
+      errorDetail = 'Video ini memiliki pembatasan hak cipta.';
+    } else if (error.message.includes('All download methods failed')) {
+      errorMessage = 'Semua metode download gagal';
+      errorDetail = 'Tidak dapat mengunduh audio dari URL yang diberikan dengan metode yang tersedia.';
+    }
+    
     res.status(500).json({ 
       success: false, 
-      message: 'Gagal memproses video', 
+      message: errorMessage, 
       error: error.message,
-      detail: 'Kesalahan saat mengunduh atau memproses audio'
+      detail: errorDetail
     });
   }
 };
