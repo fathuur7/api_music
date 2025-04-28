@@ -6,6 +6,7 @@ import os from 'os';
 import fs from 'fs';
 import { v2 as cloudinary } from 'cloudinary';
 import dotenv from 'dotenv';
+import axios from 'axios';
 
 dotenv.config();
 
@@ -40,6 +41,47 @@ const uploadToCloudinary = (filePath, folder = 'youtube-audios') => {
   });
 };
 
+// Helper function to get video info using unofficial API
+const getVideoInfo = async (videoUrl) => {
+  try {
+    // Extract video ID
+    const videoId = videoUrl.split('v=')[1]?.split('&')[0] || 
+                    videoUrl.split('youtu.be/')[1]?.split('?')[0];
+    
+    if (!videoId) throw new Error('Invalid YouTube URL');
+    
+    // First try ytdl-core
+    try {
+      const info = await ytdl.getInfo(videoId);
+      return {
+        title: info.videoDetails.title,
+        thumbnail: info.videoDetails.thumbnails[0].url,
+        duration: info.videoDetails.lengthSeconds,
+        durationInSeconds: parseInt(info.videoDetails.lengthSeconds),
+        author: info.videoDetails.author.name,
+        formats: info.formats
+      };
+    } catch (ytdlError) {
+      console.log("ytdl-core failed to get info, using alternative method:", ytdlError.message);
+      
+      // Alternative method using YouTube's Iframe API data
+      const response = await axios.get(`https://www.youtube.com/oembed?url=${videoUrl}&format=json`);
+      
+      return {
+        title: response.data.title,
+        thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+        author: response.data.author_name,
+        duration: "Unknown", // Unfortunately this API doesn't provide duration
+        durationInSeconds: 0,
+        videoId: videoId
+      };
+    }
+  } catch (error) {
+    console.error("Error getting video info:", error);
+    throw error;
+  }
+};
+
 // Endpoint to convert YouTube video to audio
 export const convertVideoToAudio = async (req, res) => {
   const { videoData } = req.body;
@@ -67,46 +109,114 @@ export const convertVideoToAudio = async (req, res) => {
     // Path for temporary storage in OS temp directory (which is writable)
     const outputPath = getTempFilePath(`${videoId}.mp3`);
     
-    let videoTitle = videoData.title || `Audio-${videoId}`;
-    let thumbnailUrl = videoData.thumbnail || '';
-    let duration = videoData.duration || '';
-    let durationInSeconds = videoData.durationInSeconds || 0;
-    let artist = videoData.author || 'Unknown';
-
-    // Use ytdl-core to get video info and download audio
-    const info = await ytdl.getInfo(videoData.url);
+    // Get video info
+    const videoInfo = await getVideoInfo(videoData.url);
     
-    // Extract video details
-    videoTitle = info.videoDetails.title;
-    thumbnailUrl = info.videoDetails.thumbnails[0].url;
-    duration = info.videoDetails.lengthSeconds;
-    durationInSeconds = parseInt(info.videoDetails.lengthSeconds);
-    artist = info.videoDetails.author.name;
+    // Extract metadata
+    const videoTitle = videoInfo.title || videoData.title || `Audio-${videoId}`;
+    const thumbnailUrl = videoInfo.thumbnail || videoData.thumbnail || '';
+    const duration = videoInfo.duration || videoData.duration || '';
+    const durationInSeconds = videoInfo.durationInSeconds || videoData.durationInSeconds || 0;
+    const artist = videoInfo.author || videoData.author || 'Unknown';
     
-    // Get audio formats ordered by quality
-    const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
-    if (audioFormats.length === 0) {
-      throw new Error('No audio formats available for this video');
+    // Method 1: Try using ytdl-core with appropriate options
+    try {
+      // Use more browser-like request headers
+      const options = {
+        quality: 'highestaudio',
+        filter: 'audioonly',
+        requestOptions: {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Connection': 'keep-alive',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Upgrade-Insecure-Requests': '1'
+          }
+        }
+      };
+      
+      // First get the video info with our custom headers
+      const info = await ytdl.getInfo(videoData.url, {
+        requestOptions: options.requestOptions
+      });
+      
+      // Get the formats
+      const formats = ytdl.filterFormats(info.formats, 'audioonly');
+      
+      if (formats.length === 0) {
+        throw new Error('No audio formats available');
+      }
+      
+      // Get the stream
+      const stream = ytdl.downloadFromInfo(info, options);
+      
+      // Convert to MP3
+      await new Promise((resolve, reject) => {
+        ffmpeg(stream)
+          .audioBitrate(128)
+          .format('mp3')
+          .on('error', (err) => {
+            console.error('FFmpeg error:', err);
+            reject(err);
+          })
+          .on('end', resolve)
+          .save(outputPath);
+      });
+    } catch (ytdlError) {
+      console.error('ytdl-core download failed:', ytdlError);
+      
+      // Method 2: Fallback to direct format URL if available
+      if (videoInfo.formats && videoInfo.formats.length > 0) {
+        // Find audio format
+        const audioFormats = videoInfo.formats.filter(f => f.mimeType && f.mimeType.includes('audio/'));
+        
+        if (audioFormats.length > 0) {
+          // Sort by quality (audio bitrate)
+          audioFormats.sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0));
+          
+          // Get the highest quality audio URL
+          const audioUrl = audioFormats[0].url;
+          
+          // Download the audio file
+          const response = await axios({
+            method: 'GET',
+            url: audioUrl,
+            responseType: 'stream',
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+          });
+          
+          // Convert to MP3
+          await new Promise((resolve, reject) => {
+            ffmpeg(response.data)
+              .audioBitrate(128)
+              .format('mp3')
+              .on('error', (err) => {
+                console.error('FFmpeg error in direct format URL:', err);
+                reject(err);
+              })
+              .on('end', resolve)
+              .save(outputPath);
+          });
+        } else {
+          throw new Error('No audio formats found');
+        }
+      } else {
+        // Method 3: Use a third-party API (you would need to implement this)
+        throw new Error('All download methods failed');
+      }
     }
     
-    // Get highest quality audio
-    const stream = ytdl.downloadFromInfo(info, { 
-      quality: 'highestaudio',
-      filter: 'audioonly'
-    });
-    
-    // Convert to mp3 using ffmpeg
-    await new Promise((resolve, reject) => {
-      ffmpeg(stream)
-        .audioBitrate(128)
-        .format('mp3')
-        .on('error', (err) => {
-          console.error('FFmpeg error:', err);
-          reject(err);
-        })
-        .on('end', resolve)
-        .save(outputPath);
-    });
+    // Check if file exists and has content
+    if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
+      throw new Error('Failed to generate audio file');
+    }
     
     // Upload the audio file to Cloudinary
     const cloudinaryResult = await uploadToCloudinary(outputPath);
@@ -115,7 +225,6 @@ export const convertVideoToAudio = async (req, res) => {
     try {
       fs.unlinkSync(outputPath);
     } catch (deleteError) {
-      // Just log if we can't delete, doesn't affect functionality
       console.warn("Couldn't delete temp file:", deleteError.message);
     }
     
@@ -220,71 +329,13 @@ export const DownloadAudioWithOptions = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Audio tidak ditemukan' });
     }
     
-    // Get video info from original URL
-    const info = await ytdl.getInfo(audio.originalUrl);
-    
-    // Generate a unique filename
-    const videoId = audio.originalUrl.split('v=')[1]?.split('&')[0] || 
-                    audio.originalUrl.split('youtu.be/')[1]?.split('?')[0] || 
-                    Date.now().toString();
-                    
-    // Path for temporary output file in OS temp directory
-    const outputFilename = `${videoId}-${quality}.${format}`;
-    const outputPath = getTempFilePath(outputFilename);
-    
-    // Use ytdl to download with requested format/quality
-    const ytdlOptions = {
-      quality: quality === 'high' ? 'highestaudio' : 'lowestaudio',
-      filter: 'audioonly'
-    };
-    
-    // Download and convert
-    const stream = ytdl.downloadFromInfo(info, ytdlOptions);
-    
-    // Set bit rate based on quality
-    const bitrate = quality === 'high' ? 320 : (quality === 'medium' ? 192 : 128);
-    
-    // Use ffmpeg to convert to requested format with specified quality
-    await new Promise((resolve, reject) => {
-      ffmpeg(stream)
-        .audioBitrate(bitrate)
-        .format(format)
-        .on('error', (err) => {
-          console.error('FFmpeg error during custom download:', err);
-          reject(err);
-        })
-        .on('end', resolve)
-        .save(outputPath);
-    });
-    
-    // Upload to Cloudinary
-    const cloudinaryResult = await uploadToCloudinary(outputPath, 'youtube-audios-custom');
-    
-    // Clean up temporary file
-    try {
-      fs.unlinkSync(outputPath);
-    } catch (deleteError) {
-      console.warn("Couldn't delete temp file:", deleteError.message);
-    }
-    
-    // Redirect to the download URL
-    const downloadUrl = cloudinaryResult.secure_url + "?fl_attachment=true";
+    // For now, just use the existing audio from Cloudinary
+    // In a future version, you could implement format and quality conversions
+    const downloadUrl = audio.audioUrl + "?fl_attachment=true";
     res.redirect(downloadUrl);
     
   } catch (error) {
     console.error('Error with custom download:', error);
-    
-    try {
-      // Fallback to existing file if there's an error
-      const audio = await Audio.findById(req.params.id);
-      if (audio) {
-        const downloadUrl = audio.audioUrl + "?fl_attachment=true";
-        return res.redirect(downloadUrl);
-      }
-    } catch (fallbackError) {
-      console.error('Error with fallback download:', fallbackError);
-    }
-    
     res.status(500).json({ 
       success: false, 
       message: 'Gagal memproses permintaan download', 
