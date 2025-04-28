@@ -41,6 +41,28 @@ const uploadToCloudinary = (filePath, folder = 'youtube-audios') => {
   });
 };
 
+// Update database with retry mechanism
+const updateDatabaseWithRetry = async (audioId, updateData, maxRetries = 3) => {
+  let retries = 0;
+  while (retries < maxRetries) {
+    try {
+      const updatedAudio = await Audio.findByIdAndUpdate(
+        audioId, 
+        updateData, 
+        { new: true }
+      );
+      console.log("Database updated successfully on attempt", retries + 1);
+      return updatedAudio;
+    } catch (error) {
+      retries++;
+      console.error(`Update attempt ${retries} failed:`, error.message);
+      // Wait before retry (exponential backoff)
+      await new Promise(resolve => setTimeout(resolve, 1000 * retries));
+    }
+  }
+  throw new Error(`Failed to update database after ${maxRetries} attempts`);
+};
+
 // Extract video ID from YouTube URL
 const extractVideoId = (url) => {
   // Patterns to extract YouTube video ID from various URL formats
@@ -256,11 +278,33 @@ export const convertVideoToAudio = async (req, res) => {
     const existingAudio = await Audio.findOne({ originalUrl: videoData.url });
     if (existingAudio) {
       console.log("Audio already available in database");
-      return res.json({
-        success: true,
-        message: 'Audio sudah tersedia',
-        audio: existingAudio
-      });
+      
+      // Check if the existing audio has valid URL and is complete
+      if (existingAudio.audioUrl === 'pending_upload' && existingAudio.status !== 'failed') {
+        console.log("Existing record found but has pending_upload status");
+        
+        // If more than 10 minutes old, assume it's stuck and start processing again
+        const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+        if (existingAudio.createdAt < tenMinutesAgo) {
+          console.log("Existing record is stale, reprocessing...");
+          // Continue with processing below
+        } else {
+          return res.json({
+            success: true,
+            message: 'Audio sedang diproses',
+            status: 'processing',
+            processingId: existingAudio._id,
+            estimatedTime: '30-60 detik'
+          });
+        }
+      } else if (existingAudio.audioUrl !== 'pending_upload') {
+        // Audio is complete, return it
+        return res.json({
+          success: true,
+          message: 'Audio sudah tersedia',
+          audio: existingAudio
+        });
+      }
     }
 
     // Extract video ID from URL
@@ -271,23 +315,30 @@ export const convertVideoToAudio = async (req, res) => {
     const videoInfo = await getVideoInfo(videoData.url);
     console.log("Video info obtained:", videoInfo.title);
     
-    // Create a DB entry to track processing status
-    const processingAudio = new Audio({
-      title: videoInfo.title || `Audio-${videoId}`,
-      originalUrl: videoData.url,
-      status: 'processing',
-      thumbnail: videoInfo.thumbnail || '',
-      duration: videoInfo.duration || '',
-      durationInSeconds: videoInfo.durationInSeconds || 0,
-      artist: videoInfo.author || 'Unknown',
-      // Add default values for required fields
-      publicId: 'pending_upload',
-      audioUrl: 'pending_upload'
-    });
-    
-    await processingAudio.save();
-    
-    await processingAudio.save();
+    // Create or update a DB entry to track processing status
+    let processingAudio;
+    if (existingAudio && existingAudio.audioUrl === 'pending_upload') {
+      // Update existing record if it's stuck
+      processingAudio = existingAudio;
+      processingAudio.status = 'processing';
+      await processingAudio.save();
+    } else {
+      // Create new record
+      processingAudio = new Audio({
+        title: videoInfo.title || `Audio-${videoId}`,
+        originalUrl: videoData.url,
+        status: 'processing',
+        thumbnail: videoInfo.thumbnail || '',
+        duration: videoInfo.duration || '',
+        durationInSeconds: videoInfo.durationInSeconds || 0,
+        artist: videoInfo.author || 'Unknown',
+        // Add default values for required fields
+        publicId: 'pending_upload',
+        audioUrl: 'pending_upload'
+      });
+      
+      await processingAudio.save();
+    }
     
     // For serverless environment, return early with processing status
     // This prevents timeout errors on Vercel
@@ -300,47 +351,8 @@ export const convertVideoToAudio = async (req, res) => {
     });
     
     // Continue processing asynchronously (won't block response)
-    try {
-      // Path for temporary storage in OS temp directory
-      const outputPath = getTempFilePath(`${videoId}.mp3`);
-      
-      console.log("Starting download process...");
-      // Try all download methods
-      await downloadAudio(videoData.url, videoInfo, outputPath);
-      
-      // Check if file exists and has content
-      if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
-        throw new Error('Gagal menghasilkan file audio');
-      }
-      
-      console.log("Audio downloaded successfully, uploading to Cloudinary...");
-      // Upload audio file to Cloudinary
-      const cloudinaryResult = await uploadToCloudinary(outputPath);
-      console.log("Uploaded to Cloudinary:", cloudinaryResult.secure_url);
-      
-      // Delete temporary file
-      try {
-        fs.unlinkSync(outputPath);
-        console.log("Temporary file deleted");
-      } catch (deleteError) {
-        console.warn("Unable to delete temp file:", deleteError.message);
-      }
-      
-      console.log("Saving audio data to database...");
-      // Update the processing entry with completed data
-      processingAudio.audioUrl = cloudinaryResult.secure_url;
-      processingAudio.publicId = cloudinaryResult.public_id;
-      processingAudio.status = 'completed';
-      await processingAudio.save();
-      
-      console.log("Audio successfully saved to database");
-    } catch (processingError) {
-      console.error("Error in async processing:", processingError);
-      // Update the record with error status
-      processingAudio.status = 'failed';
-      processingAudio.errorMessage = processingError.message;
-      await processingAudio.save();
-    }
+    processVideoAsync(videoData.url, videoInfo, processingAudio._id);
+    
   } catch (initialError) {
     console.error('Error converting video to audio:', initialError);
     
@@ -376,6 +388,58 @@ export const convertVideoToAudio = async (req, res) => {
       error: initialError.message,
       detail: errorDetail
     });
+  }
+};
+
+// Separate function to handle async processing
+const processVideoAsync = async (videoUrl, videoInfo, audioId) => {
+  try {
+    const videoId = extractVideoId(videoUrl) || Date.now().toString();
+    // Path for temporary storage in OS temp directory
+    const outputPath = getTempFilePath(`${videoId}.mp3`);
+    
+    console.log("[Async] Starting download process...");
+    // Try all download methods
+    await downloadAudio(videoUrl, videoInfo, outputPath);
+    
+    // Check if file exists and has content
+    if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
+      throw new Error('Gagal menghasilkan file audio');
+    }
+    
+    console.log("[Async] Audio downloaded successfully, uploading to Cloudinary...");
+    // Upload audio file to Cloudinary
+    const cloudinaryResult = await uploadToCloudinary(outputPath);
+    console.log("[Async] Uploaded to Cloudinary:", cloudinaryResult.secure_url);
+    
+    // Delete temporary file
+    try {
+      fs.unlinkSync(outputPath);
+      console.log("[Async] Temporary file deleted");
+    } catch (deleteError) {
+      console.warn("[Async] Unable to delete temp file:", deleteError.message);
+    }
+    
+    console.log("[Async] Updating audio data in database...");
+    // Use the retry mechanism to update the database
+    await updateDatabaseWithRetry(audioId, {
+      audioUrl: cloudinaryResult.secure_url,
+      publicId: cloudinaryResult.public_id,
+      status: 'completed'
+    });
+    
+    console.log("[Async] Audio successfully saved to database");
+  } catch (processingError) {
+    console.error("[Async] Error in async processing:", processingError);
+    // Update the record with error status
+    try {
+      await updateDatabaseWithRetry(audioId, {
+        status: 'failed',
+        errorMessage: processingError.message
+      });
+    } catch (updateError) {
+      console.error("[Async] Failed to update error status:", updateError.message);
+    }
   }
 };
 
@@ -446,6 +510,15 @@ export const DownloadAudioById = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Audio tidak ditemukan' });
     }
     
+    // Check if audio is still pending
+    if (audio.audioUrl === 'pending_upload') {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Audio masih dalam proses konversi', 
+        status: audio.status 
+      });
+    }
+    
     // For Cloudinary, we can simply redirect to the audio URL
     // Add ?fl_attachment parameter to force download
     const downloadUrl = audio.audioUrl + "?fl_attachment=true";
@@ -472,6 +545,15 @@ export const DownloadAudioWithOptions = async (req, res) => {
     const audio = await Audio.findById(id);
     if (!audio) {
       return res.status(404).json({ success: false, message: 'Audio tidak ditemukan' });
+    }
+    
+    // Check if audio is still pending
+    if (audio.audioUrl === 'pending_upload') {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Audio masih dalam proses konversi', 
+        status: audio.status 
+      });
     }
     
     // For now, just use the existing audio from Cloudinary
@@ -622,3 +704,45 @@ export const TrackDownloadProgress = async (req, res) => {
     });
   }
 };
+
+// NEW ENDPOINT: Fix stuck processing records manually
+export const fixStuckProcessingRecord = async (req, res) => {
+  try {
+    const { id, cloudinaryUrl, publicId } = req.body;
+    
+    if (!id || !cloudinaryUrl || !publicId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Parameter wajib tidak ditemukan',
+        required: ['id', 'cloudinaryUrl', 'publicId']
+      });
+    }
+    
+    const audio = await Audio.findById(id);
+    if (!audio) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Audio tidak ditemukan' 
+      });
+    }
+    
+    // Update the record
+    audio.audioUrl = cloudinaryUrl;
+    audio.publicId = publicId;
+    audio.status = 'completed';
+    await audio.save();
+    
+    res.json({
+      success: true,
+      message: 'Audio berhasil diperbarui',
+      audio
+    });
+  } catch (error) {
+    console.error('Error fixing stuck record:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Gagal memperbaiki rekaman audio', 
+      error: error.message 
+    });
+  }
+};s
