@@ -9,6 +9,7 @@ import dotenv from 'dotenv';
 import axios from 'axios';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import fs from 'fs/promises';
 
 const execAsync = promisify(exec);
 dotenv.config();
@@ -44,17 +45,17 @@ const uploadToCloudinary = (filePath, folder = 'youtube-audios') => {
   });
 };
 
-// Helper function to get video info using unofficial API
+// Fungsi yang ditingkatkan untuk mendapatkan info video
 const getVideoInfo = async (videoUrl) => {
   try {
-    // Extract video ID
-    const videoId = videoUrl.split('v=')[1]?.split('&')[0] || 
-                    videoUrl.split('youtu.be/')[1]?.split('?')[0];
+    // Ekstrak ID video
+    const videoId = extractVideoId(videoUrl);
     
-    if (!videoId) throw new Error('Invalid YouTube URL');
+    if (!videoId) throw new Error('URL YouTube tidak valid');
     
-    // First try ytdl-core
+    // Metode 1: Gunakan ytdl-core
     try {
+      console.log("Mendapatkan info dengan ytdl-core...");
       const info = await ytdl.getInfo(videoId);
       return {
         title: info.videoDetails.title,
@@ -66,24 +67,30 @@ const getVideoInfo = async (videoUrl) => {
         videoId
       };
     } catch (ytdlError) {
-      console.log("ytdl-core failed to get info, using alternative method:", ytdlError.message);
+      console.log("ytdl-core gagal mendapatkan info:", ytdlError.message);
       
-      // Alternative method using YouTube's Iframe API data
+      // Metode 2: Coba dengan versi ytdl yang berbeda
       try {
+        console.log("Mencoba cara alternatif untuk mendapatkan info...");
+        
+        // Coba mendapatkan info dengan oembed API YouTube
         const response = await axios.get(`https://www.youtube.com/oembed?url=${videoUrl}&format=json`);
+        
+        // Coba dapatkan thumbnail dengan resolusi terbaik
+        const thumbnailUrl = `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`;
         
         return {
           title: response.data.title,
-          thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+          thumbnail: thumbnailUrl,
           author: response.data.author_name,
-          duration: "Unknown", // Unfortunately this API doesn't provide duration
+          duration: "Unknown",
           durationInSeconds: 0,
           videoId
         };
       } catch (oembedError) {
-        console.log("YouTube oEmbed API failed:", oembedError.message);
+        console.log("YouTube oEmbed API gagal:", oembedError.message);
         
-        // Last resort: Use basic info from video ID
+        // Metode 3: Gunakan cara paling dasar dengan ID video
         return {
           title: `YouTube Audio - ${videoId}`,
           thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
@@ -95,9 +102,34 @@ const getVideoInfo = async (videoUrl) => {
       }
     }
   } catch (error) {
-    console.error("Error getting video info:", error);
+    console.error("Error mendapatkan info video:", error.message);
     throw error;
   }
+};
+
+// Fungsi untuk ekstrak ID video secara lebih komprehensif
+const extractVideoId = (url) => {
+  // Pola untuk mengekstrak ID video YouTube dari berbagai format URL
+  const patterns = [
+    /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i,
+    /^([^"&?\/\s]{11})$/i
+  ];
+  
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match && match[1]) {
+      return match[1];
+    }
+  }
+  
+  // Coba ekstrak ID dengan memecah URL
+  if (url.includes('v=')) {
+    return url.split('v=')[1]?.split('&')[0];
+  } else if (url.includes('youtu.be/')) {
+    return url.split('youtu.be/')[1]?.split('?')[0];
+  }
+  
+  return null;
 };
 
 // Helper function to check if command exists
@@ -128,194 +160,190 @@ const downloadWithYoutubeDl = async (videoUrl, outputPath) => {
   return false;
 };
 
-// Function to download using public YouTube to MP3 API
-const downloadWithPublicApi = async (videoId, outputPath) => {
-  try {
-    // Try using public API (need to implement with actual service)
-    // This is an example implementation - you would need to use a real service
-    // NOTE: Most free public APIs limit usage or have ads, so use with caution
-    
-    // Example with a fictional API:
-    const apiUrl = `https://youtube-mp3-download-api.example.com/dl?id=${videoId}`;
-    
-    const response = await axios.get(apiUrl);
-    
-    if (response.data && response.data.link) {
-      // Download from the provided link
-      const fileResponse = await axios({
-        method: 'get',
-        url: response.data.link,
-        responseType: 'stream'
-      });
-      
-      const writer = fs.createWriteStream(outputPath);
-      
-      return new Promise((resolve, reject) => {
-        fileResponse.data.pipe(writer);
-        writer.on('finish', () => resolve(true));
-        writer.on('error', () => reject(false));
-      });
-    }
-    
-    return false;
-  } catch (error) {
-    console.error("API download failed:", error.message);
-    return false;
-  }
-};
+// Perbaikan untuk fungsi downloadAudio
 
-// Try downloading directly using audio format URL from ytdl-core info
-const downloadWithDirectUrl = async (videoInfo, outputPath) => {
-  try {
-    if (!videoInfo.formats || videoInfo.formats.length === 0) {
-      return false;
-    }
-    
-    // Find audio format
-    const audioFormats = videoInfo.formats.filter(f => f.mimeType && f.mimeType.includes('audio/'));
-    
-    if (audioFormats.length === 0) {
-      return false;
-    }
-    
-    // Sort by quality (audio bitrate)
-    audioFormats.sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0));
-    
-    // Get the highest quality audio URL
-    const audioUrl = audioFormats[0].url;
-    
-    if (!audioUrl) {
-      return false;
-    }
-    
-    // Download the audio file
-    const response = await axios({
-      method: 'GET',
-      url: audioUrl,
-      responseType: 'stream',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-      }
-    });
-    
-    // Convert to MP3
-    return new Promise((resolve, reject) => {
-      ffmpeg(response.data)
-        .audioBitrate(128)
-        .format('mp3')
-        .on('error', (err) => {
-          console.error('FFmpeg error in direct format URL:', err);
-          resolve(false);
-        })
-        .on('end', () => resolve(true))
-        .save(outputPath);
-    });
-  } catch (error) {
-    console.error("Direct URL download failed:", error.message);
-    return false;
-  }
-};
 
-// Multi-method downloader that tries different approaches
+
+// Perbaikan fungsi downloadAudio dengan fokus pada ytdl-core
 const downloadAudio = async (videoUrl, videoInfo, outputPath) => {
-  console.log("Attempting download with multiple methods...");
+  console.log("Memulai proses download audio...");
   
-  // Method 1: Try ytdl-core with improved options
+  // Metode 1: Gunakan ytdl-core dengan konfigurasi yang lebih baik
   try {
-    console.log("Trying ytdl-core with improved options...");
+    console.log("Mencoba dengan ytdl-core dan konfigurasi yang dioptimalkan...");
+    
+    // Konfigurasi yang lebih tangguh untuk ytdl-core
     const options = {
       quality: 'highestaudio',
-      filter: 'audioonly', 
+      filter: 'audioonly',
       highWaterMark: 1 << 25, // 32MB buffer
       requestOptions: {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5',
-          'Cookie': '', // Optional: You could rotate cookies if needed
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
+          'Accept': '*/*',
+          'Accept-Language': 'en-US,en;q=0.9',
           'Connection': 'keep-alive',
           'Sec-Fetch-Dest': 'document',
           'Sec-Fetch-Mode': 'navigate',
           'Sec-Fetch-Site': 'none',
           'Sec-Fetch-User': '?1',
-          'Upgrade-Insecure-Requests': '1'
         }
       }
     };
     
-    const stream = ytdl(videoUrl, options);
-    
-    await new Promise((resolve, reject) => {
+    return new Promise((resolve, reject) => {
+      // Menggunakan stream untuk menangani video
+      const stream = ytdl(videoUrl, options);
+      
+      // Tangani error pada stream
+      stream.on('error', (err) => {
+        console.error("Error pada stream ytdl:", err.message);
+        reject(err);
+      });
+      
+      // Atur timeout untuk mencegah hanging
+      const streamTimeout = setTimeout(() => {
+        stream.destroy();
+        reject(new Error('Timeout stream setelah 60 detik'));
+      }, 60000);
+      
+      // Gunakan ffmpeg untuk memproses stream ke MP3
       ffmpeg(stream)
+        .audioCodec('libmp3lame')
         .audioBitrate(128)
         .format('mp3')
+        .on('start', () => {
+          console.log("FFmpeg mulai memproses audio...");
+        })
         .on('error', (err) => {
-          console.error('FFmpeg error with ytdl-core:', err);
+          clearTimeout(streamTimeout);
+          console.error('Error FFmpeg:', err.message);
           reject(err);
         })
-        .on('end', resolve)
+        .on('end', () => {
+          clearTimeout(streamTimeout);
+          console.log("Download ytdl-core berhasil!");
+          resolve(true);
+        })
         .save(outputPath);
     });
-    
-    console.log("ytdl-core download successful!");
-    return true;
   } catch (ytdlError) {
-    console.error('ytdl-core download failed:', ytdlError.message);
+    console.error('Download ytdl-core gagal:', ytdlError.message);
     
-    // Method 2: Try direct URL if available
-    console.log("Trying direct format URL download...");
-    const directUrlSuccess = await downloadWithDirectUrl(videoInfo, outputPath);
-    
-    if (directUrlSuccess) {
-      console.log("Direct URL download successful!");
-      return true;
-    }
-    
-    // Method 3: Try yt-dlp if available
-    console.log("Trying yt-dlp download...");
+    // Metode 2: Coba dengan format langsung dari info video
     try {
-      const ytDlpSuccess = await downloadWithYtDlp(videoUrl, outputPath);
+      console.log("Mencoba dengan download format langsung...");
       
-      if (ytDlpSuccess) {
-        console.log("yt-dlp download successful!");
-        return true;
+      if (!videoInfo.formats || videoInfo.formats.length === 0) {
+        throw new Error("Tidak ada format yang tersedia");
       }
-    } catch (ytDlpError) {
-      console.error("yt-dlp download failed:", ytDlpError.message);
-    }
-    
-    // Method 4: Try youtube-dl if available
-    console.log("Trying youtube-dl download...");
-    try {
-      const youtubeDlSuccess = await downloadWithYoutubeDl(videoUrl, outputPath);
       
-      if (youtubeDlSuccess) {
-        console.log("youtube-dl download successful!");
-        return true;
-      }
-    } catch (youtubeDlError) {
-      console.error("youtube-dl download failed:", youtubeDlError.message);
-    }
-    
-    // Method 5: Try public API service
-    console.log("Trying public API download...");
-    try {
-      const apiSuccess = await downloadWithPublicApi(videoInfo.videoId, outputPath);
+      // Cari format audio (urutkan berdasarkan kualitas)
+      const audioFormats = videoInfo.formats
+        .filter(f => f.mimeType && f.mimeType.includes('audio/'))
+        .sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0));
       
-      if (apiSuccess) {
-        console.log("Public API download successful!");
-        return true;
+      if (audioFormats.length === 0) {
+        throw new Error("Tidak ada format audio yang ditemukan");
       }
-    } catch (apiError) {
-      console.error("Public API download failed:", apiError.message);
+      
+      // Dapatkan URL audio dengan kualitas tertinggi
+      const audioUrl = audioFormats[0].url;
+      if (!audioUrl) {
+        throw new Error("URL audio tidak ditemukan");
+      }
+      
+      console.log("Format audio ditemukan, mencoba download...");
+      
+      // Download file audio
+      const response = await axios({
+        method: 'GET',
+        url: audioUrl,
+        responseType: 'stream',
+        timeout: 60000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
+        }
+      });
+      
+      // Konversi ke MP3 dengan ffmpeg
+      return new Promise((resolve, reject) => {
+        ffmpeg(response.data)
+          .audioCodec('libmp3lame')
+          .audioBitrate(128)
+          .format('mp3')
+          .on('error', (err) => {
+            console.error('Error FFmpeg dengan URL langsung:', err.message);
+            reject(err);
+          })
+          .on('end', () => {
+            console.log("Download URL langsung berhasil!");
+            resolve(true);
+          })
+          .save(outputPath);
+      });
+    } catch (directError) {
+      console.error("Download URL langsung gagal:", directError.message);
+      
+      // Metode 3: Coba dengan pendekatan alternatif ytdl
+      try {
+        console.log("Mencoba dengan ytdl stream alternatif...");
+        
+        // Konfigurasi alternatif
+        const altOptions = {
+          quality: 'lowestaudio', // Coba dengan kualitas lebih rendah
+          filter: format => format.container === 'webm' || format.container === 'mp4',
+          highWaterMark: 1 << 24, // 16MB buffer
+          requestOptions: {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Safari/605.1.15',
+            }
+          }
+        };
+        
+        return new Promise((resolve, reject) => {
+          // Coba dengan stream alternatif
+          const altStream = ytdl(videoUrl, altOptions);
+          
+          altStream.on('error', (err) => {
+            console.error("Error pada stream ytdl alternatif:", err.message);
+            reject(err);
+          });
+          
+          const outputFile = fs.createWriteStream(outputPath);
+          
+          outputFile.on('error', (err) => {
+            console.error("Error menulis file:", err.message);
+            reject(err);
+          });
+          
+          outputFile.on('finish', () => {
+            console.log("Download alternatif berhasil!");
+            resolve(true);
+          });
+          
+          // Gunakan pipe langsung untuk format yang kompatibel
+          // atau gunakan ffmpeg untuk format lainnya
+          ffmpeg(altStream)
+            .audioCodec('libmp3lame')
+            .audioBitrate(128)
+            .format('mp3')
+            .on('error', (err) => {
+              console.error('Error FFmpeg dengan ytdl alternatif:', err.message);
+              reject(err);
+            })
+            .pipe(outputFile, { end: true });
+        });
+      } catch (altError) {
+        console.error("Semua metode download gagal:", altError.message);
+        throw new Error("Semua metode download gagal");
+      }
     }
-    
-    // All methods failed
-    throw new Error("All download methods failed");
   }
 };
 
 // Endpoint to convert YouTube video to audio
+// Endpoint untuk mengkonversi video YouTube ke audio
 export const convertVideoToAudio = async (req, res) => {
   const { videoData } = req.body;
   
@@ -324,9 +352,12 @@ export const convertVideoToAudio = async (req, res) => {
   }
   
   try {
-    // Check if audio already exists in database
+    console.log("Memproses permintaan untuk URL:", videoData.url);
+    
+    // Periksa apakah audio sudah ada di database
     const existingAudio = await Audio.findOne({ originalUrl: videoData.url });
     if (existingAudio) {
+      console.log("Audio sudah tersedia di database");
       return res.json({
         success: true,
         message: 'Audio sudah tersedia',
@@ -334,50 +365,48 @@ export const convertVideoToAudio = async (req, res) => {
       });
     }
 
-    // Extract video ID from URL
-    const videoId = videoData.url.split('v=')[1]?.split('&')[0] || 
-                    videoData.url.split('youtu.be/')[1]?.split('?')[0] || 
-                    Date.now().toString();
+    // Ekstrak ID video dari URL
+    const videoId = extractVideoId(videoData.url) || Date.now().toString();
     
-    // Path for temporary storage in OS temp directory (which is writable)
+    // Path untuk penyimpanan sementara di direktori temp OS
     const outputPath = getTempFilePath(`${videoId}.mp3`);
     
-    console.log("Getting video info for:", videoData.url);
-    // Get video info
+    console.log("Mendapatkan info video untuk:", videoData.url);
+    // Dapatkan info video
     const videoInfo = await getVideoInfo(videoData.url);
-    console.log("Video info retrieved:", videoInfo.title);
+    console.log("Info video diperoleh:", videoInfo.title);
     
-    // Extract metadata
+    // Ekstrak metadata
     const videoTitle = videoInfo.title || videoData.title || `Audio-${videoId}`;
     const thumbnailUrl = videoInfo.thumbnail || videoData.thumbnail || '';
     const duration = videoInfo.duration || videoData.duration || '';
     const durationInSeconds = videoInfo.durationInSeconds || videoData.durationInSeconds || 0;
     const artist = videoInfo.author || videoData.author || 'Unknown';
     
-    console.log("Starting download process...");
-    // Try all download methods
+    console.log("Memulai proses download...");
+    // Coba semua metode download
     await downloadAudio(videoData.url, videoInfo, outputPath);
     
-    // Check if file exists and has content
+    // Periksa apakah file ada dan memiliki konten
     if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
-      throw new Error('Failed to generate audio file');
+      throw new Error('Gagal menghasilkan file audio');
     }
     
-    console.log("Audio downloaded, uploading to Cloudinary...");
-    // Upload the audio file to Cloudinary
+    console.log("Audio berhasil didownload, mengunggah ke Cloudinary...");
+    // Unggah file audio ke Cloudinary
     const cloudinaryResult = await uploadToCloudinary(outputPath);
-    console.log("Uploaded to Cloudinary:", cloudinaryResult.secure_url);
+    console.log("Diunggah ke Cloudinary:", cloudinaryResult.secure_url);
     
-    // Delete the temporary file
+    // Hapus file sementara
     try {
       fs.unlinkSync(outputPath);
-      console.log("Temporary file deleted");
+      console.log("File sementara dihapus");
     } catch (deleteError) {
-      console.warn("Couldn't delete temp file:", deleteError.message);
+      console.warn("Tidak dapat menghapus file temp:", deleteError.message);
     }
     
-    console.log("Saving audio to database...");
-    // Save audio data to database
+    console.log("Menyimpan data audio ke database...");
+    // Simpan data audio ke database
     const newAudio = new Audio({
       title: videoTitle,
       originalUrl: videoData.url,
@@ -390,7 +419,7 @@ export const convertVideoToAudio = async (req, res) => {
     });
     
     await newAudio.save();
-    console.log("Audio saved to database successfully");
+    console.log("Audio berhasil disimpan ke database");
     
     res.json({
       success: true,
@@ -399,27 +428,38 @@ export const convertVideoToAudio = async (req, res) => {
     });
       
   } catch (error) {
-    console.error('Error converting video to audio:', error);
+    console.error('Error mengkonversi video ke audio:', error);
     
-    // Provide more specific error messages based on common issues
+    // Berikan pesan error yang lebih spesifik berdasarkan masalah umum
     let errorMessage = 'Gagal memproses video';
     let errorDetail = 'Kesalahan saat mengunduh atau memproses audio';
+    let errorCode = 500;
     
     if (error.message.includes('410')) {
       errorMessage = 'YouTube API tidak tersedia (Error 410)';
       errorDetail = 'YouTube telah mengubah API mereka. Coba lagi nanti atau gunakan URL video lain.';
-    } else if (error.message.includes('sign in')) {
+    } else if (error.message.includes('sign in') || error.message.includes('login')) {
       errorMessage = 'Video memerlukan login';
       errorDetail = 'Video ini memerlukan login YouTube dan tidak dapat diunduh.';
+      errorCode = 403;
     } else if (error.message.includes('copyright')) {
       errorMessage = 'Masalah hak cipta';
       errorDetail = 'Video ini memiliki pembatasan hak cipta.';
-    } else if (error.message.includes('All download methods failed')) {
+      errorCode = 403;
+    } else if (error.message.includes('private')) {
+      errorMessage = 'Video bersifat privat';
+      errorDetail = 'Video ini dibuat privat oleh pemiliknya dan tidak dapat diakses.';
+      errorCode = 403;
+    } else if (error.message.includes('tidak valid') || error.message.includes('invalid')) {
+      errorMessage = 'URL YouTube tidak valid';
+      errorDetail = 'Silakan periksa URL dan coba lagi.';
+      errorCode = 400;
+    } else if (error.message.includes('Semua metode download gagal')) {
       errorMessage = 'Semua metode download gagal';
-      errorDetail = 'Tidak dapat mengunduh audio dari URL yang diberikan dengan metode yang tersedia.';
+      errorDetail = 'Tidak dapat mengunduh audio dari URL yang diberikan dengan metode yang tersedia. Coba URL lain atau coba lagi nanti.';
     }
     
-    res.status(500).json({ 
+    res.status(errorCode).json({ 
       success: false, 
       message: errorMessage, 
       error: error.message,
