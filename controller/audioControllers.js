@@ -1,4 +1,4 @@
-import ytdl from 'ytdl-core';
+import { video_info, stream, YouTubeVideo } from 'play-dl';
 import ffmpeg from 'fluent-ffmpeg';
 import path from 'path';
 import Audio from '../models/audio.js';
@@ -41,7 +41,7 @@ const uploadToCloudinary = (filePath, folder = 'youtube-audios') => {
   });
 };
 
-// Helper function to get video info using unofficial API
+// Helper function to get video info (with multiple fallbacks)
 const getVideoInfo = async (videoUrl) => {
   try {
     // Extract video ID
@@ -50,34 +50,73 @@ const getVideoInfo = async (videoUrl) => {
     
     if (!videoId) throw new Error('Invalid YouTube URL');
     
-    // First try ytdl-core
+    // Method 1: Try play-dl
     try {
-      const info = await ytdl.getInfo(videoId);
-      return {
-        title: info.videoDetails.title,
-        thumbnail: info.videoDetails.thumbnails[0].url,
-        duration: info.videoDetails.lengthSeconds,
-        durationInSeconds: parseInt(info.videoDetails.lengthSeconds),
-        author: info.videoDetails.author.name,
-        formats: info.formats
-      };
-    } catch (ytdlError) {
-      console.log("ytdl-core failed to get info, using alternative method:", ytdlError.message);
-      
-      // Alternative method using YouTube's Iframe API data
-      const response = await axios.get(`https://www.youtube.com/oembed?url=${videoUrl}&format=json`);
+      const info = await video_info(videoUrl);
       
       return {
-        title: response.data.title,
-        thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-        author: response.data.author_name,
-        duration: "Unknown", // Unfortunately this API doesn't provide duration
-        durationInSeconds: 0,
-        videoId: videoId
+        title: info.video_details.title,
+        thumbnail: info.video_details.thumbnails.pop().url,
+        duration: info.video_details.durationInSec.toString(),
+        durationInSeconds: info.video_details.durationInSec,
+        author: info.video_details.channel?.name || 'Unknown',
+        videoDetails: info.video_details
       };
+    } catch (playDlError) {
+      console.log("play-dl failed to get info, using alternative method:", playDlError.message);
+      
+      // Method 2: Use YouTube's oEmbed API
+      try {
+        const response = await axios.get(`https://www.youtube.com/oembed?url=${videoUrl}&format=json`);
+        
+        return {
+          title: response.data.title,
+          thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+          author: response.data.author_name,
+          duration: "Unknown", 
+          durationInSeconds: 0,
+          videoId: videoId
+        };
+      } catch (oembedError) {
+        console.log("YouTube oEmbed API failed:", oembedError.message);
+        
+        // Method 3: Use basic metadata from URL
+        return {
+          title: `YouTube Audio - ${videoId}`,
+          thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+          author: 'Unknown',
+          duration: "Unknown",
+          durationInSeconds: 0,
+          videoId: videoId
+        };
+      }
     }
   } catch (error) {
     console.error("Error getting video info:", error);
+    throw error;
+  }
+};
+
+// Download video using play-dl
+const downloadAudio = async (videoUrl, outputPath) => {
+  try {
+    // Get audio stream
+    const audioStream = await stream(videoUrl, { quality: 140 }); // 140 is audio/mp4 format
+    
+    return new Promise((resolve, reject) => {
+      // Convert to MP3 with ffmpeg
+      ffmpeg(audioStream.stream)
+        .audioBitrate(128)
+        .format('mp3')
+        .on('error', (err) => {
+          console.error('FFmpeg error:', err);
+          reject(err);
+        })
+        .on('end', resolve)
+        .save(outputPath);
+    });
+  } catch (error) {
+    console.error("Error in downloadAudio:", error);
     throw error;
   }
 };
@@ -109,8 +148,10 @@ export const convertVideoToAudio = async (req, res) => {
     // Path for temporary storage in OS temp directory (which is writable)
     const outputPath = getTempFilePath(`${videoId}.mp3`);
     
+    console.log("Getting video info for:", videoData.url);
     // Get video info
     const videoInfo = await getVideoInfo(videoData.url);
+    console.log("Video info retrieved:", videoInfo.title);
     
     // Extract metadata
     const videoTitle = videoInfo.title || videoData.title || `Audio-${videoId}`;
@@ -119,107 +160,20 @@ export const convertVideoToAudio = async (req, res) => {
     const durationInSeconds = videoInfo.durationInSeconds || videoData.durationInSeconds || 0;
     const artist = videoInfo.author || videoData.author || 'Unknown';
     
-    // Method 1: Try using ytdl-core with appropriate options
-    try {
-      // Use more browser-like request headers
-      const options = {
-        quality: 'highestaudio',
-        filter: 'audioonly',
-        requestOptions: {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Connection': 'keep-alive',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Upgrade-Insecure-Requests': '1'
-          }
-        }
-      };
-      
-      // First get the video info with our custom headers
-      const info = await ytdl.getInfo(videoData.url, {
-        requestOptions: options.requestOptions
-      });
-      
-      // Get the formats
-      const formats = ytdl.filterFormats(info.formats, 'audioonly');
-      
-      if (formats.length === 0) {
-        throw new Error('No audio formats available');
-      }
-      
-      // Get the stream
-      const stream = ytdl.downloadFromInfo(info, options);
-      
-      // Convert to MP3
-      await new Promise((resolve, reject) => {
-        ffmpeg(stream)
-          .audioBitrate(128)
-          .format('mp3')
-          .on('error', (err) => {
-            console.error('FFmpeg error:', err);
-            reject(err);
-          })
-          .on('end', resolve)
-          .save(outputPath);
-      });
-    } catch (ytdlError) {
-      console.error('ytdl-core download failed:', ytdlError);
-      
-      // Method 2: Fallback to direct format URL if available
-      if (videoInfo.formats && videoInfo.formats.length > 0) {
-        // Find audio format
-        const audioFormats = videoInfo.formats.filter(f => f.mimeType && f.mimeType.includes('audio/'));
-        
-        if (audioFormats.length > 0) {
-          // Sort by quality (audio bitrate)
-          audioFormats.sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0));
-          
-          // Get the highest quality audio URL
-          const audioUrl = audioFormats[0].url;
-          
-          // Download the audio file
-          const response = await axios({
-            method: 'GET',
-            url: audioUrl,
-            responseType: 'stream',
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
-          });
-          
-          // Convert to MP3
-          await new Promise((resolve, reject) => {
-            ffmpeg(response.data)
-              .audioBitrate(128)
-              .format('mp3')
-              .on('error', (err) => {
-                console.error('FFmpeg error in direct format URL:', err);
-                reject(err);
-              })
-              .on('end', resolve)
-              .save(outputPath);
-          });
-        } else {
-          throw new Error('No audio formats found');
-        }
-      } else {
-        // Method 3: Use a third-party API (you would need to implement this)
-        throw new Error('All download methods failed');
-      }
-    }
+    console.log("Downloading audio...");
+    // Download audio using play-dl
+    await downloadAudio(videoData.url, outputPath);
+    console.log("Audio downloaded to:", outputPath);
     
     // Check if file exists and has content
     if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
       throw new Error('Failed to generate audio file');
     }
     
+    console.log("Uploading to Cloudinary...");
     // Upload the audio file to Cloudinary
     const cloudinaryResult = await uploadToCloudinary(outputPath);
+    console.log("Uploaded to Cloudinary:", cloudinaryResult.secure_url);
     
     // Delete the temporary file
     try {
@@ -228,6 +182,7 @@ export const convertVideoToAudio = async (req, res) => {
       console.warn("Couldn't delete temp file:", deleteError.message);
     }
     
+    console.log("Saving to database...");
     // Save audio data to database
     const newAudio = new Audio({
       title: videoTitle,
@@ -241,6 +196,7 @@ export const convertVideoToAudio = async (req, res) => {
     });
     
     await newAudio.save();
+    console.log("Audio saved to database!");
     
     res.json({
       success: true,
