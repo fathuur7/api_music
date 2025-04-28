@@ -100,21 +100,55 @@ const getVideoInfo = async (videoUrl) => {
 // Download video using play-dl
 const downloadAudio = async (videoUrl, outputPath) => {
   try {
-    // Get audio stream
-    const audioStream = await stream(videoUrl, { quality: 140 }); // 140 is audio/mp4 format
-    
-    return new Promise((resolve, reject) => {
-      // Convert to MP3 with ffmpeg
-      ffmpeg(audioStream.stream)
-        .audioBitrate(128)
-        .format('mp3')
-        .on('error', (err) => {
-          console.error('FFmpeg error:', err);
-          reject(err);
-        })
-        .on('end', resolve)
-        .save(outputPath);
-    });
+    // Method 1: Try play-dl
+    try {
+      const audioStream = await stream(videoUrl, { quality: 140 });
+      
+      return new Promise((resolve, reject) => {
+        ffmpeg(audioStream.stream)
+          .audioBitrate(128)
+          .format('mp3')
+          .on('error', (err) => {
+            console.error('FFmpeg error:', err);
+            reject(err);
+          })
+          .on('end', resolve)
+          .save(outputPath);
+      });
+    } catch (playDlError) {
+      console.log("play-dl failed to download audio, using alternative method:", playDlError.message);
+      
+      // Method 2: Try ytdl-core
+      try {
+        const ytdl = await import('ytdl-core');
+        
+        return new Promise((resolve, reject) => {
+          ytdl.default(videoUrl, { 
+            quality: 'highestaudio',
+            filter: 'audioonly' 
+          })
+          .pipe(fs.createWriteStream(outputPath))
+          .on('finish', resolve)
+          .on('error', reject);
+        });
+      } catch (ytdlError) {
+        console.log("ytdl-core failed:", ytdlError.message);
+        
+        // Method 3: Try another alternative like youtube-dl-exec
+        try {
+          const youtubeDl = await import('youtube-dl-exec');
+          await youtubeDl.default(videoUrl, {
+            extractAudio: true,
+            audioFormat: 'mp3',
+            output: outputPath
+          });
+          return;
+        } catch (youtubeDlError) {
+          console.log("youtube-dl-exec failed:", youtubeDlError.message);
+          throw new Error("All download methods failed");
+        }
+      }
+    }
   } catch (error) {
     console.error("Error in downloadAudio:", error);
     throw error;
