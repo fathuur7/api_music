@@ -3,37 +3,41 @@ import {
     convertVideoToAudio,
     GetAllAudios,
     GetAudioById,
-    DownloadAudioById, 
-    DownloadAudioWithOptions, 
+    DownloadAudioById,
+    DownloadAudioWithOptions,
     fixStuckProcessingRecord,
-    TrackDownloadProgress
+    TrackDownloadProgress,
+    getProcessStatusSSE,
+    checkConversionStatus
 } from '../controller/audioControllers.js';
 
 const router = express.Router();
 
-
-// Rute untuk mengkonversi video ke audio
+// Convert video to audio
 router.post('/convert', convertVideoToAudio);
 
-// Rute untuk mendapatkan semua audio
+// Get all audio records
 router.get('/', GetAllAudios);
 
-// Rute untuk mendapatkan satu audio berdasarkan ID
+// Get audio by ID
 router.get('/:id', GetAudioById);
 
-// Rute untuk mendownload audio berdasarkan ID
+// Check conversion status
+router.get('/status/:id', checkConversionStatus);
+
+// Stream process status updates via SSE
+router.get('/process-status/:id', getProcessStatusSSE);
+
+// Download audio by ID
 router.get('/download/:id', DownloadAudioById);
 
-router.post('/fix-stuck-record', fixStuckProcessingRecord);
-router.get('/status/:id', GetAudioById);
-
-// Rute untuk mendownload audio dengan opsi format dan kualitas
+// Download audio with specified format and quality options
 router.get('/download/:id/options', DownloadAudioWithOptions);
 
-// Rute untuk tracking progress download
+// Track download progress
 router.get('/track/:id', TrackDownloadProgress);
 
-
+// Fix stuck processing records (admin function)
+router.post('/fix-stuck-record', fixStuckProcessingRecord);
 
 export default router;
-
