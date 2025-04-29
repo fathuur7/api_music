@@ -67,20 +67,23 @@ const uploadToCloudinary = async (filePath, folder = 'youtube-audios') => {
   });
 };
 
-// Keep-alive function for serverless environments
-const keepAlive = async (processId, maxTime = 300000) => {
+/// Enhanced keepAlive function with longer timeout and better monitoring
+const keepAlive = async (processId, maxTime = 600000) => { // Increased to 10 minutes
   let elapsed = 0;
   const interval = 15000; // 15 second ping
   
-  // Register process in the registry
+  // Register process in the registry with more detailed info
   if (!processRegistry.has(processId)) {
     processRegistry.set(processId, {
       id: processId,
       startTime: Date.now(),
       lastUpdate: Date.now(),
-      status: 'running',
+      status: 'initialized',
       progress: 0,
-      logs: []
+      logs: ['Process initialized'],
+      retries: 0,
+      downloadedBytes: 0,
+      totalBytes: 0
     });
   }
   
@@ -101,13 +104,23 @@ const keepAlive = async (processId, maxTime = 300000) => {
     process.logs.push(`[KeepAlive] Process running for ${elapsed/1000}s`);
     processRegistry.set(processId, process);
     
-    // Emit status update for SSE clients
+    // Emit status update for SSE clients with more details
     processMonitor.emit(`status-${processId}`, {
       id: processId,
       elapsed: elapsed,
       status: process.status,
       progress: process.progress,
-      lastUpdate: currentTime
+      lastUpdate: currentTime,
+      elapsedFormatted: `${Math.floor(elapsed/60000)}m ${Math.floor((elapsed%60000)/1000)}s`,
+      downloadStats: process.downloadedBytes > 0 ? {
+        downloaded: process.downloadedBytes,
+        total: process.totalBytes,
+        percentage: process.totalBytes > 0 ? 
+          Math.round((process.downloadedBytes / process.totalBytes) * 100) : 0,
+        formattedDownloaded: `${(process.downloadedBytes/(1024*1024)).toFixed(2)}MB`,
+        formattedTotal: process.totalBytes > 0 ? 
+          `${(process.totalBytes/(1024*1024)).toFixed(2)}MB` : 'Unknown'
+      } : null
     });
     
     // Check if max time reached
@@ -122,7 +135,7 @@ const keepAlive = async (processId, maxTime = 300000) => {
       processMonitor.emit(`status-${processId}`, {
         id: processId,
         status: 'failed',
-        error: 'Process timed out',
+        error: `Process timed out after ${Math.floor(maxTime/60000)} minutes`,
         lastUpdate: currentTime
       });
     }
@@ -131,8 +144,8 @@ const keepAlive = async (processId, maxTime = 300000) => {
   return pingInterval;
 };
 
-// Update process status and progress
-const updateProcessStatus = (processId, status, progress = null, log = null) => {
+// Enhanced update process status function to store more details
+const updateProcessStatus = (processId, status, progress = null, log = null, extraData = {}) => {
   if (!processRegistry.has(processId)) {
     return false;
   }
@@ -144,16 +157,43 @@ const updateProcessStatus = (processId, status, progress = null, log = null) => 
   if (progress !== null) process.progress = progress;
   if (log) process.logs.push(`[${new Date().toISOString()}] ${log}`);
   
+  // Update any extra data like downloaded bytes, total bytes, etc.
+  Object.keys(extraData).forEach(key => {
+    process[key] = extraData[key];
+  });
+  
   process.lastUpdate = currentTime;
   processRegistry.set(processId, process);
   
-  // Emit event for SSE listeners
+  // Calculate elapsed time
+  const elapsed = currentTime - process.startTime;
+  const elapsedFormatted = `${Math.floor(elapsed/60000)}m ${Math.floor((elapsed%60000)/1000)}s`;
+  
+  // Add download stats if available
+  let downloadStats = null;
+  if (process.downloadedBytes > 0) {
+    downloadStats = {
+      downloaded: process.downloadedBytes,
+      total: process.totalBytes,
+      percentage: process.totalBytes > 0 ? 
+        Math.round((process.downloadedBytes / process.totalBytes) * 100) : 0,
+      formattedDownloaded: `${(process.downloadedBytes/(1024*1024)).toFixed(2)}MB`,
+      formattedTotal: process.totalBytes > 0 ? 
+        `${(process.totalBytes/(1024*1024)).toFixed(2)}MB` : 'Unknown'
+    };
+  }
+  
+  // Emit event for SSE listeners with more details
   processMonitor.emit(`status-${processId}`, {
     id: processId,
     status: process.status,
     progress: process.progress,
     lastUpdate: currentTime,
-    message: log
+    message: log,
+    elapsed: elapsed,
+    elapsedFormatted: elapsedFormatted,
+    downloadStats: downloadStats,
+    retries: process.retries || 0
   });
   
   return true;
@@ -218,179 +258,163 @@ const extractVideoId = (url) => {
   
   return null;
 };
-
-// Get video metadata using YouTube oEmbed API - more reliable in serverless
-const getVideoInfo = async (videoUrl) => {
-  try {
-    const videoId = extractVideoId(videoUrl);
+// Enhanced function to get video info with better error handling and retry logic
+const getVideoInfo = async (videoUrl, maxRetries = 3) => {
+  let attempts = 0;
+  let lastError = null;
+  
+  while (attempts < maxRetries) {
+    attempts++;
     
-    if (!videoId) throw new Error('URL YouTube tidak valid');
-    
-    // First try with oEmbed API - very reliable and lightweight
     try {
-      const response = await axios.get(`https://www.youtube.com/oembed?url=${videoUrl}&format=json`, {
-        timeout: 5000
-      });
+      const videoId = extractVideoId(videoUrl);
       
-      return {
-        title: response.data.title,
-        thumbnail: `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
-        author: response.data.author_name,
-        videoId
-      };
-    } catch (oembedError) {
-      console.log("YouTube oEmbed API failed:", oembedError.message);
+      if (!videoId) throw new Error('URL YouTube tidak valid');
       
-      // Fall back to ytdl-core but with timeout
-      try {
-        const info = await Promise.race([
-          ytdl.getInfo(videoId),
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('ytdl-core timeout')), 10000)
-          )
-        ]);
+      // Try different approaches in sequence
+      const approaches = [
+        // Approach 1: YouTube oEmbed API (fastest but limited info)
+        async () => {
+          const response = await axios.get(`https://www.youtube.com/oembed?url=${videoUrl}&format=json`, {
+            timeout: 8000,
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+          });
+          
+          return {
+            title: response.data.title,
+            thumbnail: `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
+            author: response.data.author_name,
+            videoId
+          };
+        },
         
-        return {
-          title: info.videoDetails.title,
-          thumbnail: info.videoDetails.thumbnails[0].url,
-          duration: info.videoDetails.lengthSeconds,
-          durationInSeconds: parseInt(info.videoDetails.lengthSeconds),
-          author: info.videoDetails.author.name,
-          formats: info.formats,
-          videoId
-        };
-      } catch (ytdlError) {
-        console.log("ytdl-core failed:", ytdlError.message);
+        // Approach 2: Direct ytdl-core with timeout
+        async () => {
+          const info = await Promise.race([
+            ytdl.getInfo(videoId),
+            new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('ytdl-core timeout')), 15000)
+            )
+          ]);
+          
+          return {
+            title: info.videoDetails.title,
+            thumbnail: info.videoDetails.thumbnails[0].url,
+            duration: info.videoDetails.lengthSeconds,
+            durationInSeconds: parseInt(info.videoDetails.lengthSeconds),
+            author: info.videoDetails.author.name,
+            formats: info.formats,
+            videoId
+          };
+        },
         
-        // Most basic fallback
-        return {
-          title: `YouTube Audio - ${videoId}`,
-          thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-          author: 'Unknown',
-          videoId
-        };
+        // Approach 3: Simple fallback with basic info
+        async () => {
+          return {
+            title: `YouTube Audio - ${videoId}`,
+            thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+            author: 'Unknown',
+            videoId
+          };
+        }
+      ];
+      
+      // Try each approach in sequence until one succeeds
+      for (const approach of approaches) {
+        try {
+          return await approach();
+        } catch (approachError) {
+          console.log(`Video info approach failed: ${approachError.message}`);
+          // Continue to next approach
+          lastError = approachError;
+        }
+      }
+      
+      // If we get here, all approaches failed in this attempt
+      throw new Error(lastError?.message || 'All video info retrieval methods failed');
+      
+    } catch (error) {
+      console.error(`Video info attempt ${attempts} failed: ${error.message}`);
+      lastError = error;
+      
+      // Wait before retry (exponential backoff)
+      if (attempts < maxRetries) {
+        const backoffTime = 1000 * Math.pow(2, attempts - 1); // 1s, 2s, 4s...
+        await new Promise(resolve => setTimeout(resolve, backoffTime));
       }
     }
-  } catch (error) {
-    console.error("Error getting video info:", error.message);
-    throw error;
   }
+  
+  // If we reach here, all attempts failed
+  console.error("All video info retrieval attempts failed");
+  throw new Error(`Failed to get video information after ${maxRetries} attempts. Last error: ${lastError?.message}`);
 };
 
-// Direct download without ytdl-core (for reliability)
+// Di// Enhanced direct download function with better timeout and error handling
 const directAudioDownload = async (url, outputPath, processId) => {
   updateProcessStatus(processId, 'downloading', 20, "Attempting direct audio download");
   
-  const response = await axios({
-    method: 'GET',
-    url,
-    responseType: 'stream',
-    timeout: 30000,
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
-  });
-  
-  let downloadedBytes = 0;
-  const totalBytes = parseInt(response.headers['content-length']) || 0;
-  
-  return new Promise((resolve, reject) => {
-    const writer = fs.createWriteStream(outputPath);
-    
-    // Set up progress tracking
-    if (totalBytes > 0) {
-      response.data.on('data', (chunk) => {
-        downloadedBytes += chunk.length;
-        const progress = Math.min(40, 20 + Math.floor((downloadedBytes / totalBytes) * 20));
-        updateProcessStatus(processId, 'downloading', progress, 
-          `Downloading: ${Math.round((downloadedBytes / totalBytes) * 100)}%`);
-      });
-    }
-    
-    response.data.pipe(writer);
-    
-    writer.on('finish', () => {
-      updateProcessStatus(processId, 'processing', 40, "Direct download successful");
-      resolve(true);
-    });
-    
-    writer.on('error', (err) => {
-      updateProcessStatus(processId, 'error', null, `Error writing file: ${err.message}`);
-      reject(err);
-    });
-  });
-};
-
-// Download audio using ytdl-core but optimized for serverless
-const downloadAudio = async (videoUrl, videoInfo, outputPath, processId) => {
-  updateProcessStatus(processId, 'started', 10, "Starting audio download process");
-  
-  // If we have formats from the video info, try to find a direct audio URL
-  if (videoInfo.formats && videoInfo.formats.length > 0) {
-    // Find audio formats and sort by quality
-    const audioFormats = videoInfo.formats
-      .filter(f => f.mimeType && f.mimeType.includes('audio/'))
-      .sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0));
-    
-    // If we have audio formats, use the best one
-    if (audioFormats.length > 0 && audioFormats[0].url) {
-      try {
-        updateProcessStatus(processId, 'downloading', 15, "Direct audio URL found, attempting download");
-        await directAudioDownload(audioFormats[0].url, outputPath, processId);
-        
-        // Verify the file exists and has content
-        if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
-          return true;
-        }
-      } catch (directError) {
-        updateProcessStatus(processId, 'error', null, `Direct download failed: ${directError.message}`);
-        // Continue to next method
-      }
-    }
-  }
-  
-  // Try with ytdl-core direct pipe (no ffmpeg)
   try {
-    updateProcessStatus(processId, 'downloading', 15, "Trying ytdl-core direct download");
-    
-    // Use a robust configuration for ytdl-core
-    const options = {
-      quality: 'highestaudio',
-      filter: 'audioonly',
-      highWaterMark: 1 << 25, // 32MB buffer
-      requestOptions: {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
+    const response = await axios({
+      method: 'GET',
+      url,
+      responseType: 'stream',
+      timeout: 180000, // 3 minutes timeout
+      maxContentLength: 500 * 1024 * 1024, // Allow up to 500MB files
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Range': 'bytes=0-'  // Support resumable downloads
       }
-    };
+    });
+    
+    let downloadedBytes = 0;
+    const totalBytes = parseInt(response.headers['content-length']) || 0;
     
     return new Promise((resolve, reject) => {
-      // Set a timeout for the entire operation
-      const downloadTimeout = setTimeout(() => {
-        updateProcessStatus(processId, 'error', null, "Download timeout after 45 seconds");
-        reject(new Error('Download timeout after 45 seconds'));
-      }, 45000);
+      // Set timeout based on expected download time
+      const estimatedTimePerMB = 2000; // 2 seconds per MB
+      const fileSizeMB = totalBytes / (1024 * 1024);
+      const dynamicTimeout = Math.max(
+        60000, // Minimum 1 minute
+        Math.min(300000, Math.ceil(fileSizeMB * estimatedTimePerMB)) // Max 5 minutes
+      );
       
-      const stream = ytdl(videoUrl, options);
+      const downloadTimeout = setTimeout(() => {
+        updateProcessStatus(processId, 'error', null, 
+          `Direct download timeout after ${dynamicTimeout/1000} seconds`);
+        reject(new Error(`Direct download timeout after ${dynamicTimeout/1000} seconds`));
+      }, dynamicTimeout);
+      
       const writer = fs.createWriteStream(outputPath);
       
-      // Track download progress
-      let downloadedBytes = 0;
-      let reportedSize = 0;
+      // Set up progress tracking
+      if (totalBytes > 0) {
+        response.data.on('data', (chunk) => {
+          downloadedBytes += chunk.length;
+          const progress = Math.min(40, 20 + Math.floor((downloadedBytes / totalBytes) * 20));
+          const percentage = Math.round((downloadedBytes / totalBytes) * 100);
+          
+          // Update progress less frequently to reduce overhead
+          if (percentage % 5 === 0 || percentage >= 99) {
+            updateProcessStatus(processId, 'downloading', progress, 
+              `Direct download: ${percentage}% (${(downloadedBytes/(1024*1024)).toFixed(2)}MB/${(totalBytes/(1024*1024)).toFixed(2)}MB)`);
+          }
+        });
+      }
       
-      stream.on('progress', (_, downloaded, total) => {
-        downloadedBytes = downloaded;
-        reportedSize = total;
-        const progress = Math.min(40, 15 + Math.floor((downloaded / total) * 25));
-        updateProcessStatus(processId, 'downloading', progress, 
-          `Downloading: ${Math.round((downloaded / total) * 100)}%`);
-      });
+      response.data.pipe(writer);
       
-      stream.on('error', (err) => {
+      writer.on('finish', () => {
         clearTimeout(downloadTimeout);
-        updateProcessStatus(processId, 'error', null, `Error on ytdl stream: ${err.message}`);
-        reject(err);
+        const fileSize = fs.statSync(outputPath).size;
+        updateProcessStatus(processId, 'processing', 40, 
+          `Direct download successful: ${(fileSize/(1024*1024)).toFixed(2)}MB downloaded`);
+        resolve(true);
       });
       
       writer.on('error', (err) => {
@@ -399,27 +423,121 @@ const downloadAudio = async (videoUrl, videoInfo, outputPath, processId) => {
         reject(err);
       });
       
-      writer.on('finish', () => {
+      // Handle connection errors
+      response.data.on('error', (err) => {
         clearTimeout(downloadTimeout);
-        // Check if file has content
-        const stats = fs.statSync(outputPath);
-        if (stats.size > 0) {
-          updateProcessStatus(processId, 'processing', 40, "ytdl-core download successful");
-          resolve(true);
-        } else {
-          updateProcessStatus(processId, 'error', null, "Generated file is empty");
-          reject(new Error("Generated file is empty"));
-        }
+        updateProcessStatus(processId, 'error', null, `Connection error: ${err.message}`);
+        reject(err);
       });
-      
-      // Pipe the stream directly to file
-      stream.pipe(writer);
     });
-  } catch (ytdlError) {
-    updateProcessStatus(processId, 'failed', null, `All download methods failed: ${ytdlError.message}`);
-    throw new Error("All download methods failed");
+  } catch (error) {
+    updateProcessStatus(processId, 'error', null, 
+      `Failed to initiate direct download: ${error.message}`);
+    throw error;
   }
 };
+
+// // Download audio using ytdl-core but optimized for serverless
+// const downloadAudio = async (videoUrl, videoInfo, outputPath, processId) => {
+//   updateProcessStatus(processId, 'started', 10, "Starting audio download process");
+  
+//   // If we have formats from the video info, try to find a direct audio URL
+//   if (videoInfo.formats && videoInfo.formats.length > 0) {
+//     // Find audio formats and sort by quality
+//     const audioFormats = videoInfo.formats
+//       .filter(f => f.mimeType && f.mimeType.includes('audio/'))
+//       .sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0));
+    
+//     // If we have audio formats, use the best one
+//     if (audioFormats.length > 0 && audioFormats[0].url) {
+//       try {
+//         updateProcessStatus(processId, 'downloading', 15, "Direct audio URL found, attempting download");
+//         await directAudioDownload(audioFormats[0].url, outputPath, processId);
+        
+//         // Verify the file exists and has content
+//         if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
+//           return true;
+//         }
+//       } catch (directError) {
+//         updateProcessStatus(processId, 'error', null, `Direct download failed: ${directError.message}`);
+//         // Continue to next method
+//       }
+//     }
+//   }
+  
+//   // Try with ytdl-core direct pipe (no ffmpeg)
+//   try {
+//     updateProcessStatus(processId, 'downloading', 15, "Trying ytdl-core direct download");
+    
+//     // Use a robust configuration for ytdl-core
+//     const options = {
+//       quality: 'highestaudio',
+//       filter: 'audioonly',
+//       highWaterMark: 1 << 25, // 32MB buffer
+//       requestOptions: {
+//         headers: {
+//           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+//         }
+//       }
+//     };
+    
+//     return new Promise((resolve, reject) => {
+//       // Set a timeout for the entire operation
+//      // Update this section in the downloadAudio function
+//       const downloadTimeout = setTimeout(() => {
+//         updateProcessStatus(processId, 'error', null, "Download timeout after 120 seconds");
+//         reject(new Error('Download timeout after 120 seconds'));
+//       }, 120000); // Increased from 45000 (45s) to 120000 (2min)
+
+      
+//       const stream = ytdl(videoUrl, options);
+//       const writer = fs.createWriteStream(outputPath);
+      
+//       // Track download progress
+//       let downloadedBytes = 0;
+//       let reportedSize = 0;
+      
+//       stream.on('progress', (_, downloaded, total) => {
+//         downloadedBytes = downloaded;
+//         reportedSize = total;
+//         const progress = Math.min(40, 15 + Math.floor((downloaded / total) * 25));
+//         updateProcessStatus(processId, 'downloading', progress, 
+//           `Downloading: ${Math.round((downloaded / total) * 100)}%`);
+//       });
+      
+//       stream.on('error', (err) => {
+//         clearTimeout(downloadTimeout);
+//         updateProcessStatus(processId, 'error', null, `Error on ytdl stream: ${err.message}`);
+//         reject(err);
+//       });
+      
+//       writer.on('error', (err) => {
+//         clearTimeout(downloadTimeout);
+//         updateProcessStatus(processId, 'error', null, `Error writing file: ${err.message}`);
+//         reject(err);
+//       });
+      
+//       writer.on('finish', () => {
+//         clearTimeout(downloadTimeout);
+//         // Check if file has content
+//         const stats = fs.statSync(outputPath);
+//         if (stats.size > 0) {
+//           updateProcessStatus(processId, 'processing', 40, "ytdl-core download successful");
+//           resolve(true);
+//         } else {
+//           updateProcessStatus(processId, 'error', null, "Generated file is empty");
+//           reject(new Error("Generated file is empty"));
+//         }
+//       });
+      
+//       // Pipe the stream directly to file
+//       stream.pipe(writer);
+//     });
+//   } catch (ytdlError) {
+//     updateProcessStatus(processId, 'failed', null, `All download methods failed: ${ytdlError.message}`);
+//     throw new Error("All download methods failed");
+//   }
+// };
 
 // Main endpoint for YouTube to audio conversion
 export const convertVideoToAudio = async (req, res) => {
@@ -556,6 +674,139 @@ export const convertVideoToAudio = async (req, res) => {
       error: initialError.message,
       detail: errorDetail
     });
+  }
+};
+
+// Add this new function to implement retry logic for downloads
+const downloadWithRetry = async (videoUrl, videoInfo, outputPath, processId, maxRetries = 3) => {
+  let attempts = 0;
+  let lastError = null;
+
+  while (attempts < maxRetries) {
+    attempts++;
+    try {
+      updateProcessStatus(processId, 'downloading', 15 + (attempts - 1) * 5, 
+        `Download attempt ${attempts} of ${maxRetries}`);
+      
+      // Try with different quality settings depending on attempt number
+      const options = {
+        quality: attempts === 1 ? 'highestaudio' : (attempts === 2 ? 'lowestaudio' : 'highestaudio'),
+        filter: 'audioonly',
+        highWaterMark: 1 << 25, // 32MB buffer
+        requestOptions: {
+          headers: {
+            'User-Agent': `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${90 + attempts}.0.0.0 Safari/537.36`
+          },
+          timeout: 60000 * attempts // Increase timeout with each attempt
+        }
+      };
+      
+      return new Promise((resolve, reject) => {
+        // Set a timeout scaled by attempt number
+        const downloadTimeout = setTimeout(() => {
+          updateProcessStatus(processId, 'retrying', null, 
+            `Download timeout after ${2 * attempts} minutes on attempt ${attempts}`);
+          reject(new Error(`Download timeout on attempt ${attempts}`));
+        }, 120000 * attempts); // 2min, 4min, 6min for respective attempts
+        
+        const stream = ytdl(videoUrl, options);
+        const writer = fs.createWriteStream(outputPath);
+        
+        // Track download progress
+        let downloadedBytes = 0;
+        let reportedSize = 0;
+        
+        stream.on('progress', (_, downloaded, total) => {
+          downloadedBytes = downloaded;
+          reportedSize = total;
+          const progress = Math.min(40, 15 + Math.floor((downloaded / total) * 25));
+          updateProcessStatus(processId, 'downloading', progress, 
+            `Attempt ${attempts}: ${Math.round((downloaded / total) * 100)}% complete`);
+        });
+        
+        stream.on('error', (err) => {
+          clearTimeout(downloadTimeout);
+          updateProcessStatus(processId, 'error', null, 
+            `Error on ytdl stream attempt ${attempts}: ${err.message}`);
+          reject(err);
+        });
+        
+        writer.on('error', (err) => {
+          clearTimeout(downloadTimeout);
+          updateProcessStatus(processId, 'error', null, 
+            `Error writing file on attempt ${attempts}: ${err.message}`);
+          reject(err);
+        });
+        
+        writer.on('finish', () => {
+          clearTimeout(downloadTimeout);
+          // Check if file has content
+          const stats = fs.statSync(outputPath);
+          if (stats.size > 0) {
+            updateProcessStatus(processId, 'processing', 40, 
+              `Download successful on attempt ${attempts}`);
+            resolve(true);
+          } else {
+            updateProcessStatus(processId, 'error', null, 
+              `Generated file is empty on attempt ${attempts}`);
+            reject(new Error(`Generated file is empty on attempt ${attempts}`));
+          }
+        });
+        
+        // Pipe the stream directly to file
+        stream.pipe(writer);
+      });
+    } catch (error) {
+      lastError = error;
+      updateProcessStatus(processId, 'retrying', 15, 
+        `Attempt ${attempts} failed: ${error.message}. ${attempts < maxRetries ? 'Retrying...' : 'All attempts failed.'}`);
+      
+      // Wait before retry (exponential backoff)
+      if (attempts < maxRetries) {
+        const backoffTime = 2000 * Math.pow(2, attempts - 1); // 2s, 4s, 8s...
+        await new Promise(resolve => setTimeout(resolve, backoffTime));
+      }
+    }
+  }
+  
+  // If we reach here, all attempts failed
+  throw new Error(`All ${maxRetries} download attempts failed. Last error: ${lastError?.message}`);
+};
+
+// Now replace the downloadAudio function with this new version
+const downloadAudio = async (videoUrl, videoInfo, outputPath, processId) => {
+  updateProcessStatus(processId, 'started', 10, "Starting audio download process");
+  
+  // If we have formats from the video info, try to find a direct audio URL
+  if (videoInfo.formats && videoInfo.formats.length > 0) {
+    // Find audio formats and sort by quality
+    const audioFormats = videoInfo.formats
+      .filter(f => f.mimeType && f.mimeType.includes('audio/'))
+      .sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0));
+    
+    // If we have audio formats, use the best one
+    if (audioFormats.length > 0 && audioFormats[0].url) {
+      try {
+        updateProcessStatus(processId, 'downloading', 15, "Direct audio URL found, attempting download");
+        await directAudioDownload(audioFormats[0].url, outputPath, processId);
+        
+        // Verify the file exists and has content
+        if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
+          return true;
+        }
+      } catch (directError) {
+        updateProcessStatus(processId, 'error', null, `Direct download failed: ${directError.message}`);
+        // Continue to next method
+      }
+    }
+  }
+  
+  // Try with our enhanced retry download function
+  try {
+    return await downloadWithRetry(videoUrl, videoInfo, outputPath, processId, 3);
+  } catch (allAttemptsError) {
+    updateProcessStatus(processId, 'failed', null, `All download methods failed: ${allAttemptsError.message}`);
+    throw new Error("All download methods failed");
   }
 };
 
