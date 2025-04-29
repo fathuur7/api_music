@@ -648,26 +648,6 @@ const processVideoAsync = async (videoUrl, videoInfo, audioId, processId) => {
   }
 };
 
-// Add a new schema to Audio model (schema update)
-/*
-// Add this to your Audio model schema
-{
-  monitoringId: {
-    type: String,
-    default: null
-  },
-  processingLogs: [{
-    timestamp: {
-      type: Date,
-      default: Date.now
-    },
-    message: String,
-    status: String,
-    progress: Number
-  }]
-}
-*/
-
 // Endpoint to get all stored audio
 export const GetAllAudios = async (req, res) => {
   try {
