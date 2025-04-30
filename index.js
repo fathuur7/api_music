@@ -5,7 +5,7 @@ import cookieParser from "cookie-parser";
 import mongoose from "mongoose";
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import audioRoutes from "./routes/audioRoutes.js";
+// import audioRoutes from "./routes/audioRoutes.js";/
 import searchRoutes from "./routes/searchRoutes.js";
 
 
@@ -16,11 +16,6 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// ========== Middleware ========== //
-
-// Static file serving
-app.use('/uploads', express.static(join(__dirname, 'uploads')));
-app.use('/controller/uploads', express.static(join(__dirname, 'controller/uploads')));
 
 // Body parsing
 app.use(express.json());
@@ -38,7 +33,7 @@ app.use(cors({
 
 
 // ========== Routes ========== //
-app.use('/api/audio', audioRoutes);
+// app.use('/api/audio', audioRoutes);
 app.use('/api', searchRoutes);
 
 
