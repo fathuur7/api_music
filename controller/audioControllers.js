@@ -142,9 +142,7 @@ export const convertVideoToAudio = async (req, res) => {
     const downloadMethods = [
       tryDownloadWithPlayDl,
       tryDownloadWithYtdlCore,
-      tryDownloadWithDistubeYtdl,
-      tryDownloadWithYtdlCoreAndCookies,
-      tryDownloadWithDistubeAndCookies
+      tryDownloadWithDistubeYtdl
     ];
     
     let uploadResult = null;
@@ -325,63 +323,6 @@ async function tryDownloadWithDistubeYtdl(url, videoInfo) {
   return { filePath };
 }
 
-// Method 4: Download with ytdl-core + cookies
-async function tryDownloadWithYtdlCoreAndCookies(url, videoInfo) {
-  const cookieString = process.env.YOUTUBE_COOKIES || '';
-  
-  if (!cookieString) {
-    throw new Error('No YouTube cookies available for authentication');
-  }
-  
-  const tempDir = os.tmpdir();
-  const filename = `${Date.now()}_${sanitizeFileName(videoInfo.title)}.mp3`;
-  const filePath = path.join(tempDir, filename);
-  
-  const audioStream = ytdl(url, { 
-    quality: 'highestaudio',
-    filter: 'audioonly',
-    highWaterMark: 1 << 25,
-    requestOptions: {
-      headers: {
-        cookie: cookieString
-      }
-    }
-  });
-  
-  const fileWriter = createWriteStream(filePath);
-  await pipelineAsync(audioStream, fileWriter);
-  
-  return { filePath };
-}
-
-// Method 5: Download with @distube/ytdl-core + cookies
-async function tryDownloadWithDistubeAndCookies(url, videoInfo) {
-  const cookieString = process.env.YOUTUBE_COOKIES || '';
-  
-  if (!cookieString) {
-    throw new Error('No YouTube cookies available for authentication');
-  }
-  
-  const tempDir = os.tmpdir();
-  const filename = `${Date.now()}_${sanitizeFileName(videoInfo.title)}.mp3`;
-  const filePath = path.join(tempDir, filename);
-  
-  const audioStream = ytdlDistube(url, { 
-    quality: 'highestaudio',
-    filter: 'audioonly',
-    highWaterMark: 1 << 25,
-    requestOptions: {
-      headers: {
-        cookie: cookieString
-      }
-    }
-  });
-  
-  const fileWriter = createWriteStream(filePath);
-  await pipelineAsync(audioStream, fileWriter);
-  
-  return { filePath };
-}
 
 // Health check route for YouTube API
 export const youtubeApiHealthCheck = async (req, res) => {
