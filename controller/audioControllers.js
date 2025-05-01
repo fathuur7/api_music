@@ -3,6 +3,13 @@ import { video_info, stream } from 'play-dl';
 import { v2 as cloudinary } from 'cloudinary';
 import axios from 'axios';
 import ytdl from 'ytdl-core';
+import { createWriteStream, unlink } from 'fs';
+import { promisify } from 'util';
+import path from 'path';
+import os from 'os';
+
+// Promisify unlink
+const unlinkAsync = promisify(unlink);
 
 // Cloudinary configuration
 cloudinary.config({
@@ -11,14 +18,13 @@ cloudinary.config({
   api_secret: process.env.API_SECRET
 });
 
-// Function to stream directly to Cloudinary
-const streamToCloudinary = async (audioStream, format, title) => {
+// Function to upload a local file to Cloudinary
+const uploadToCloudinary = async (filePath, title) => {
   return new Promise((resolve, reject) => {
-    // Create writable stream for Cloudinary
-    const cloudinaryStream = cloudinary.uploader.upload_stream(
+    cloudinary.uploader.upload(
+      filePath,
       {
         resource_type: 'video',
-        format: format,
         public_id: `audio_${Date.now()}_${title.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30)}`
       },
       (error, result) => {
@@ -28,16 +34,13 @@ const streamToCloudinary = async (audioStream, format, title) => {
         resolve(result);
       }
     );
-
-    // Pipe directly from YouTube to Cloudinary (without saving to disk)
-    audioStream.pipe(cloudinaryStream);
   });
 };
 
 // Alternative method using YouTube Data API for getting video info
 const getVideoInfoFromAPI = async (videoId) => {
   try {
-    const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || 'AIzaSyAzu95CN-s2h-Af_YiYzVavs7j32b_rNiA';
+    const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || 'YOUR_API_KEY'; // Replace with your actual API key
     const response = await axios.get(`https://www.googleapis.com/youtube/v3/videos`, {
       params: {
         part: 'snippet,contentDetails',
@@ -68,13 +71,40 @@ const extractVideoId = (url) => {
   return match && match[2].length === 11 ? match[2] : null;
 };
 
-// Controller for converting YouTube video to audio using play-dl
+// Download the file to a temporary location first
+const downloadToTemp = async (stream, title) => {
+  const tempDir = os.tmpdir();
+  const tempFilePath = path.join(tempDir, `${Date.now()}_${title.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30)}.mp3`);
+  
+  return new Promise((resolve, reject) => {
+    const fileWriter = createWriteStream(tempFilePath);
+    
+    stream.pipe(fileWriter);
+    
+    fileWriter.on('finish', () => {
+      resolve(tempFilePath);
+    });
+    
+    fileWriter.on('error', (err) => {
+      reject(err);
+    });
+    
+    stream.on('error', (err) => {
+      fileWriter.end();
+      reject(err);
+    });
+  });
+};
+
+// Controller for converting YouTube video to audio
 export const convertVideoToAudio = async (req, res) => {
   const { url } = req.body;
   
   if (!url) {
     return res.status(400).json({ error: 'Invalid URL' });
   }
+  
+  let tempFilePath = null;
 
   try {
     // Extract video ID
@@ -89,39 +119,65 @@ export const convertVideoToAudio = async (req, res) => {
       return res.status(400).json({ error: 'Could not retrieve video information' });
     }
     
-    // Get audio stream using play-dl
-    let audioStream;
-    try {
-      audioStream = await stream(url, { 
-        quality: 140, // m4a 128 kbps audio format
-        discordPlayerCompatibility: false
-      });
-      
-      if (!audioStream) {
-        throw new Error('Could not create audio stream');
+    // Try different methods in sequence
+    const methods = [
+      tryPlayDl,
+      tryYtdlCore,
+      tryYtdlCoreWithCookie
+    ];
+    
+    let result = null;
+    let lastError = null;
+    
+    for (const method of methods) {
+      try {
+        result = await method(url, videoInfo);
+        if (result) {
+          // Return success response with audio details
+          return res.status(200).json({
+            success: true,
+            title: videoInfo.title,
+            url: result.secure_url,
+            filename: result.public_id,
+            duration: videoInfo.duration,
+            thumbnail: videoInfo.thumbnailUrl,
+            method: method.name
+          });
+        }
+      } catch (error) {
+        console.error(`${method.name} failed:`, error.message);
+        lastError = error;
+        
+        // Clean up temp file if it exists and we're moving to the next method
+        if (tempFilePath) {
+          try {
+            await unlinkAsync(tempFilePath);
+            tempFilePath = null;
+          } catch (unlinkError) {
+            console.error('Failed to delete temp file:', unlinkError);
+          }
+        }
       }
-      
-      // Upload directly to Cloudinary
-      const result = await streamToCloudinary(audioStream.stream, 'mp3', videoInfo.title);
-      
-      // Return success response with audio details
-      return res.status(200).json({
-        success: true,
-        title: videoInfo.title,
-        url: result.secure_url,
-        filename: result.public_id,
-        duration: videoInfo.duration,
-        thumbnail: videoInfo.thumbnailUrl
-      });
-    } catch (playDlError) {
-      console.log('play-dl streaming failed, falling back to ytdl-core', playDlError.message);
-      
-      // Fallback to ytdl-core if play-dl fails
-      return useYtdlFallback(res, url, videoId, videoInfo);
     }
+    
+    // If we get here, all methods failed
+    return res.status(500).json({
+      error: 'All download methods failed',
+      message: lastError?.message || 'Unknown error'
+    });
     
   } catch (error) {
     console.error('Error:', error);
+    
+    // Clean up temp file if it exists
+    if (tempFilePath) {
+      try {
+        await unlinkAsync(tempFilePath);
+      } catch (unlinkError) {
+        console.error('Failed to delete temp file:', unlinkError);
+      }
+    }
+    
     return res.status(500).json({
       error: 'An error occurred while processing the video',
       message: error.message
@@ -129,50 +185,93 @@ export const convertVideoToAudio = async (req, res) => {
   }
 };
 
-// Fallback method using ytdl-core
-const useYtdlFallback = async (res, url, videoId, videoInfo) => {
-  try {
-    // Get audio stream using ytdl-core
-    const ytdlStream = ytdl(url, { 
-      quality: 'highestaudio',
-      filter: 'audioonly'
-    });
-    
-    // Handle any errors with the stream
-    ytdlStream.on('error', (err) => {
-      console.error('ytdl stream error:', err);
-      return res.status(500).json({
-        error: 'Failed to create audio stream with fallback method',
-        message: err.message
-      });
-    });
-    
-    // Upload to Cloudinary
-    const result = await streamToCloudinary(ytdlStream, 'mp3', videoInfo.title);
-    
-    // Return success response
-    return res.status(200).json({
-      success: true,
-      title: videoInfo.title,
-      url: result.secure_url,
-      filename: result.public_id,
-      duration: videoInfo.duration,
-      thumbnail: videoInfo.thumbnailUrl,
-      method: 'ytdl-fallback'
-    });
-  } catch (error) {
-    console.error('ytdl fallback error:', error);
-    return res.status(500).json({
-      error: 'Fallback method failed',
-      message: error.message
-    });
+// Method 1: Try play-dl
+async function tryPlayDl(url, videoInfo) {
+  console.log('Attempting download with play-dl...');
+  
+  // Get audio stream using play-dl
+  const audioStream = await stream(url, { 
+    quality: 140, // m4a 128 kbps audio format
+    discordPlayerCompatibility: false
+  });
+  
+  if (!audioStream) {
+    throw new Error('Could not create audio stream with play-dl');
   }
-};
+  
+  // Download to temp file
+  const tempFilePath = await downloadToTemp(audioStream.stream, videoInfo.title);
+  
+  // Upload to Cloudinary from local file
+  const result = await uploadToCloudinary(tempFilePath, videoInfo.title);
+  
+  // Delete temp file
+  await unlinkAsync(tempFilePath);
+  
+  return result;
+}
+
+// Method 2: Try ytdl-core
+async function tryYtdlCore(url, videoInfo) {
+  console.log('Attempting download with ytdl-core...');
+  
+  // Get audio stream using ytdl-core
+  const ytdlStream = ytdl(url, { 
+    quality: 'highestaudio',
+    filter: 'audioonly'
+  });
+  
+  // Download to temp file
+  const tempFilePath = await downloadToTemp(ytdlStream, videoInfo.title);
+  
+  // Upload to Cloudinary from local file
+  const result = await uploadToCloudinary(tempFilePath, videoInfo.title);
+  
+  // Delete temp file
+  await unlinkAsync(tempFilePath);
+  
+  return result;
+}
+
+// Method 3: Try ytdl-core with cookie
+async function tryYtdlCoreWithCookie(url, videoInfo) {
+  console.log('Attempting download with ytdl-core + cookies...');
+  
+  // These are example cookies - you should implement a proper cookie retrieval method
+  // These could be stored in environment variables or a database
+  const cookieString = process.env.YOUTUBE_COOKIES || '';
+  
+  if (!cookieString) {
+    throw new Error('No YouTube cookies available for authentication');
+  }
+  
+  // Get audio stream using ytdl-core with cookies
+  const ytdlStream = ytdl(url, { 
+    quality: 'highestaudio',
+    filter: 'audioonly',
+    requestOptions: {
+      headers: {
+        cookie: cookieString
+      }
+    }
+  });
+  
+  // Download to temp file
+  const tempFilePath = await downloadToTemp(ytdlStream, videoInfo.title);
+  
+  // Upload to Cloudinary from local file
+  const result = await uploadToCloudinary(tempFilePath, videoInfo.title);
+  
+  // Delete temp file
+  await unlinkAsync(tempFilePath);
+  
+  return result;
+}
 
 // Add a healthcheck route to verify API key
 export const youtubeApiHealthCheck = async (req, res) => {
   try {
-    const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || 'AIzaSyAzu95CN-s2h-Af_YiYzVavs7j32b_rNiA';
+    const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || 'YOUR_API_KEY'; // Replace with your actual API key
     const response = await axios.get('https://www.googleapis.com/youtube/v3/videos', {
       params: {
         part: 'snippet',
