@@ -10,6 +10,8 @@ import { pipeline } from 'stream';
 import dotenv from 'dotenv';
 import path from 'path';
 import os from 'os';
+import ffmpeg from 'fluent-ffmpeg';
+
 
 
 // Load .env
