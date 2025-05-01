@@ -1,6 +1,6 @@
 import express from 'express';
 import {
-    convertYtToCloudinary,
+    convertAndUpload,
     // GetAllAudios,
     // GetAudioById,
     // DownloadAudioById,
@@ -14,7 +14,7 @@ import {
 const router = express.Router();
 
 // Convert video to audio
-router.post('/convertAndUpload', convertYtToCloudinary);
+router.post('/convert', convertAndUpload);
 
 
 // Get all audio records
