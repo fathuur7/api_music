@@ -7,8 +7,13 @@ import ytdlDistube from '@distube/ytdl-core'; // More resilient ytdl version
 import { createWriteStream, unlink, mkdirSync, existsSync } from 'fs';
 import { promisify } from 'util';
 import { pipeline } from 'stream';
+import dotenv from 'dotenv';
 import path from 'path';
 import os from 'os';
+
+
+// Load .env
+dotenv.config();
 
 // Promisify utilities
 const unlinkAsync = promisify(unlink);
@@ -96,131 +101,56 @@ const extractVideoId = (url) => {
 
 // Main controller function for YouTube to Cloudinary conversion
 export const convertVideoToAudio = async (req, res) => {
-  const { url } = req.body;
+   if (req.method === 'POST') {
+      const { videoUrl } = req.body;
   
-  if (!url) {
-    return res.status(400).json({ error: 'URL tidak valid' });
-  }
-
-  let tempFilePath = null;
+      if (!videoUrl) {
+        return res.status(400).json({ error: 'Video URL is required.' });
+      }
   
-  try {
-    // Validate the URL (using both libraries for maximum compatibility)
-    if (!ytdl.validateURL(url) && !ytdlDistube.validateURL(url)) {
-      return res.status(400).json({ error: 'URL YouTube tidak valid' });
-    }
-
-    // Try each method in sequence until one works
-    const methods = [
-      tryGetInfoWithYtdlCore,
-      tryGetInfoWithDistubeYtdl,
-      tryGetInfoWithPlayDl,
-      tryGetInfoWithYoutubeAPI
-    ];
-    
-    let videoInfo = null;
-    
-    // Try to get video info with each method
-    for (const method of methods) {
       try {
-        console.log(`Attempting to get video info with ${method.name}...`);
-        videoInfo = await method(url);
-        if (videoInfo) {
-          console.log(`Successfully retrieved video info with ${method.name}`);
-          break;
-        }
-      } catch (error) {
-        console.error(`${method.name} failed:`, error.message);
+        // Unduh video dari YouTube
+        const videoPath = '/tmp/video.mp4'; // Path sementara di Vercel
+        await ytdl(videoUrl, {
+          output: videoPath,
+        });
+  
+        // Konversi video ke MP3
+        const mp3Path = '/tmp/audio.mp3'; // Path untuk MP3 sementara
+        ffmpeg(videoPath)
+          .audioCodec('libmp3lame')
+          .toFormat('mp3')
+          .save(mp3Path)
+          .on('end', async () => {
+            try {
+              // Unggah MP3 ke Cloudinary
+              const uploadResponse = await cloudinary.v2.uploader.upload(mp3Path, {
+                resource_type: 'auto',
+              });
+  
+              // Hapus file lokal setelah di-upload
+              fs.unlinkSync(videoPath);
+              fs.unlinkSync(mp3Path);
+  
+              // Kirimkan URL MP3 yang di-upload
+              res.status(200).json({ message: 'File uploaded successfully.', url: uploadResponse.secure_url });
+            } catch (err) {
+              console.error('Error uploading to Cloudinary:', err);
+              res.status(500).json({ error: 'Failed to upload to Cloudinary' });
+            }
+          })
+          .on('error', (err) => {
+            console.error('Error converting video to MP3:', err);
+            res.status(500).json({ error: 'Failed to convert video to MP3' });
+          });
+      } catch (err) {
+        console.error('Error downloading video:', err);
+        res.status(500).json({ error: 'Failed to download video' });
       }
+    } else {
+      res.status(405).json({ error: 'Method Not Allowed' });
     }
-    
-    if (!videoInfo) {
-      return res.status(500).json({ error: 'Tidak dapat mengambil informasi video' });
-    }
-    
-    // Download methods to try in sequence
-    const downloadMethods = [
-      tryDownloadWithPlayDl,
-      tryDownloadWithYtdlCore,
-      tryDownloadWithDistubeYtdl
-    ];
-    
-    let uploadResult = null;
-    let lastError = null;
-    
-    // Try each download method until one works
-    for (const method of downloadMethods) {
-      try {
-        console.log(`Attempting download with ${method.name}...`);
-        const result = await method(url, videoInfo);
-        if (result.filePath) {
-          tempFilePath = result.filePath;
-          
-          // Upload to Cloudinary
-          uploadResult = await uploadToCloudinary(tempFilePath, videoInfo.title);
-          
-          console.log(`Successfully uploaded to Cloudinary with ${method.name}`);
-          break;
-        }
-      } catch (error) {
-        console.error(`${method.name} failed:`, error.message);
-        lastError = error;
-        
-        // Clean up temp file if it exists before trying next method
-        if (tempFilePath) {
-          try {
-            await unlinkAsync(tempFilePath);
-            tempFilePath = null;
-          } catch (unlinkError) {
-            console.error('Failed to delete temp file:', unlinkError);
-          }
-        }
-      }
-    }
-    
-    if (!uploadResult) {
-      return res.status(500).json({
-        error: 'Semua metode unduhan gagal',
-        message: lastError?.message || 'Unknown error'
-      });
-    }
-    
-    // Clean up the temporary file
-    if (tempFilePath) {
-      try {
-        await unlinkAsync(tempFilePath);
-      } catch (unlinkError) {
-        console.error('Failed to delete temp file:', unlinkError);
-      }
-    }
-    
-    // Return success response
-    return res.status(200).json({
-      success: true,
-      title: videoInfo.title,
-      url: uploadResult.secure_url,
-      filename: uploadResult.public_id,
-      duration: videoInfo.duration || videoInfo.lengthSeconds,
-      thumbnail: videoInfo.thumbnailUrl || videoInfo.thumbnail,
-    });
-    
-  } catch (error) {
-    console.error('General error:', error);
-    
-    // Clean up temp file if it exists
-    if (tempFilePath) {
-      try {
-        await unlinkAsync(tempFilePath);
-      } catch (unlinkError) {
-        console.error('Failed to delete temp file:', unlinkError);
-      }
-    }
-    
-    return res.status(500).json({
-      error: 'Terjadi kesalahan saat memproses video',
-      message: error.message
-    });
-  }
+  
 };
 
 // ===== VIDEO INFO RETRIEVAL METHODS =====
