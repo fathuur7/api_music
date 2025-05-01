@@ -1,6 +1,6 @@
 import express from 'express';
 import {
-    convertVideoToAudio,
+    convertYtToMp3,
     // GetAllAudios,
     // GetAudioById,
     // DownloadAudioById,
@@ -9,16 +9,13 @@ import {
     // TrackDownloadProgress,
     // getProcessStatusSSE,
     // checkConversionStatus
-    youtubeApiHealthCheck
 } from '../controller/audioControllers.js';
 
 const router = express.Router();
 
 // Convert video to audio
-router.post('/convert', convertVideoToAudio);
+router.post('/convert', convertYtToMp3);
 
-// Health check for YouTube API
-router.get('/health', youtubeApiHealthCheck);
 
 // Get all audio records
 // router.get('/', GetAllAudios);
