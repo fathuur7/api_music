@@ -2,15 +2,20 @@ import { v2 as cloudinary } from 'cloudinary';
 import ytdl from 'youtube-dl-exec';
 import fs from 'fs';
 import path from 'path';
+import { promisify } from 'util';
+import { exec } from 'child_process';
 
-// Konfigurasi Cloudinary
+// Promisify exec for async/await usage
+const execAsync = promisify(exec);
+
+// Cloudinary Configuration
 cloudinary.config({
   cloud_name: process.env.CLOUD_NAME,
   api_key: process.env.API_KEY,
   api_secret: process.env.API_SECRET,
 });
 
-// Controller utama
+// Main Controller
 export const convertVideoToAudio = async (req, res) => {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
@@ -22,46 +27,39 @@ export const convertVideoToAudio = async (req, res) => {
   }
 
   try {
-    // Unduh video sementara
     const filePath = '/tmp/video.mp4';
-
-    const output = fs.createWriteStream(filePath);
-    const videoStream = ytdl(videoUrl, {
-      format: 'bestaudio',
+    
+    // Use youtube-dl-exec to download the video
+    // The exec method returns a promise that resolves when the download is complete
+    await ytdl.exec(videoUrl, {
+      output: filePath,
+      extractAudio: true,
+      audioFormat: 'mp3',
+      noCheckCertificate: true,
+      noWarnings: true,
+      preferFreeFormats: true,
+      addHeader: ['referer:youtube.com', 'user-agent:Mozilla/5.0'],
     });
 
-    videoStream.pipe(output);
-
-    output.on('finish', async () => {
-      try {
-        // Upload ke Cloudinary dan konversi otomatis ke MP3
-        const result = await cloudinary.uploader.upload(filePath, {
-          resource_type: 'video',
-          eager: [
-            { format: 'mp3' } // Cloudinary akan otomatis convert ke MP3
-          ],
-          eager_async: false,
-        });
-
-        // Ambil URL hasil convert MP3
-        const mp3Url = result.eager?.[0]?.secure_url;
-
-        // Hapus file lokal
-        fs.unlinkSync(filePath);
-
-        return res.status(200).json({ message: 'Sukses', mp3Url });
-      } catch (uploadErr) {
-        console.error('Upload error:', uploadErr);
-        return res.status(500).json({ error: 'Gagal upload dan convert' });
-      }
+    // Upload to Cloudinary after download is complete
+    const result = await cloudinary.uploader.upload(filePath, {
+      resource_type: 'video',
+      eager: [
+        { format: 'mp3' }
+      ],
+      eager_async: false,
     });
 
-    output.on('error', (err) => {
-      console.error('Download error:', err);
-      return res.status(500).json({ error: 'Gagal unduh video' });
-    });
+    // Get the MP3 URL from the conversion
+    const mp3Url = result.eager?.[0]?.secure_url;
+
+    // Delete the local file
+    fs.unlinkSync(filePath);
+
+    return res.status(200).json({ message: 'Success', mp3Url });
+    
   } catch (err) {
     console.error('Unexpected error:', err);
-    return res.status(500).json({ error: 'Terjadi kesalahan' });
+    return res.status(500).json({ error: 'An error occurred', details: err.message });
   }
 };
