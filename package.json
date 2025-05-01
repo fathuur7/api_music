@@ -1,6 +1,7 @@
 {
   "dependencies": {
     "@clerk/clerk-sdk-node": "^5.1.6",
+    "@distube/ytdl-core": "^4.16.9",
     "@prisma/client": "^6.5.0",
     "axios": "^1.9.0",
     "bcrypt": "^5.1.1",

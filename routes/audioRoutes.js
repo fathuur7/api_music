@@ -1,44 +1,20 @@
+// routes/audioRoutes.js
 import express from 'express';
 import {
-    convertAndUpload,
-    // GetAllAudios,
-    // GetAudioById,
-    // DownloadAudioById,
-    // DownloadAudioWithOptions,
-    // fixStuckProcessingRecord,
-    // TrackDownloadProgress,
-    // getProcessStatusSSE,
-    // checkConversionStatus
+  convertVideoToAudio,
+  youtubeApiHealthCheck,
+  downloadWithProgress
 } from '../controller/audioControllers.js';
 
 const router = express.Router();
 
-// Convert video to audio
-router.post('/convert', convertAndUpload);
+// Convert YouTube video to audio and upload to Cloudinary
+router.post('/convert', convertVideoToAudio);
 
+// Download YouTube audio with progress tracking (supports SSE)
+router.post('/download-with-progress', downloadWithProgress);
 
-// Get all audio records
-// router.get('/', GetAllAudios);
-
-// // Get audio by ID
-// router.get('/:id', GetAudioById);
-
-// // Check conversion status
-// router.get('/status/:id', checkConversionStatus);
-
-// // Stream process status updates via SSE
-// router.get('/process-status/:id', getProcessStatusSSE);
-
-// // Download audio by ID
-// router.get('/download/:id', DownloadAudioById);
-
-// // Download audio with specified format and quality options
-// router.get('/download/:id/options', DownloadAudioWithOptions);
-
-// // Track download progress
-// router.get('/track/:id', TrackDownloadProgress);
-
-// // Fix stuck processing records (admin function)
-// router.post('/fix-stuck-record', fixStuckProcessingRecord);
+// Check if YouTube API is working correctly
+router.get('/youtube-api-health', youtubeApiHealthCheck);
 
 export default router;
