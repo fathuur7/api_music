@@ -1,15 +1,16 @@
-FROM public.ecr.aws/lambda/nodejs:18
+FROM node:18
 
-# Install FFmpeg
-RUN yum update -y && \
-    yum install -y xz && \
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y curl xz-utils && \
     curl -O https://johnvansickle.com/ffmpeg/builds/ffmpeg-git-amd64-static.tar.xz && \
-    tar xf ffmpeg-git-amd64-static.tar.xz && \
+    tar xf ffmpeg-git-*.tar.xz && \
     cp ffmpeg-git-*/ffmpeg ffmpeg-git-*/ffprobe /usr/local/bin/ && \
     rm -rf ffmpeg-git-*
 
-# Copy your app
-COPY app.js package.json ./
+COPY package.json .
 RUN npm install
 
-CMD ["app.handler"]
+COPY . .
+
+CMD ["node", "app.js"]
