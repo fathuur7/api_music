@@ -1,6 +1,6 @@
-// api/convert.js
-import ytdl from 'ytdl-core';  // Hapus tanda kurung
-import { v2 as cloudinary } from 'cloudinary';  // Perlu destructuring yang benar
+// controller/audioControllers.js
+import { video_info, stream } from 'play-dl';
+import { v2 as cloudinary } from 'cloudinary';
 
 // Konfigurasi Cloudinary
 cloudinary.config({
@@ -10,7 +10,7 @@ cloudinary.config({
 });
 
 // Fungsi untuk menangani stream dan upload langsung ke Cloudinary
-const streamToCloudinary = async (ytStream, format) => {
+const streamToCloudinary = async (audioStream, format) => {
   return new Promise((resolve, reject) => {
     // Buat writeable stream untuk Cloudinary
     const cloudinaryStream = cloudinary.uploader.upload_stream(
@@ -28,37 +28,56 @@ const streamToCloudinary = async (ytStream, format) => {
     );
 
     // Pipe langsung dari YouTube ke Cloudinary (tanpa menyimpan di disk)
-    ytStream.pipe(cloudinaryStream);
+    audioStream.pipe(cloudinaryStream);
   });
 };
 
+// Controller untuk konversi video YouTube ke audio
 export const convertVideoToAudio = async (req, res) => {
   const { url } = req.body;
   
-  if (!url || !ytdl.validateURL(url)) {
+  if (!url) {
     return res.status(400).json({ error: 'URL tidak valid' });
   }
 
   try {
-    // Dapatkan audio stream dari YouTube dengan kualitas tertinggi
-    const audioStream = ytdl(url, { 
-      filter: 'audioonly',
-      quality: 'highestaudio' 
-    });
-
-    // Upload langsung ke Cloudinary
-    const result = await streamToCloudinary(audioStream, 'mp3');
+    // Validasi dan dapatkan informasi video
+    const videoInfo = await video_info(url);
     
-    return res.json({ 
-      success: true, 
-      url: result.secure_url,
-      filename: result.public_id
+    if (!videoInfo) {
+      return res.status(400).json({ error: 'Tidak dapat mengambil informasi video' });
+    }
+    
+    // Dapatkan stream audio terbaik
+    const audioStream = await stream(url, { 
+      quality: 140, // Format audio m4a 128 kbps
+      discordPlayerCompatibility: false
     });
-  } catch (err) {
-    console.error('Error:', err);
-    return res.status(500).json({ 
-      error: 'Terjadi kesalahan saat proses',
-      message: err.message 
+    
+    if (!audioStream) {
+      return res.status(400).json({ error: 'Tidak dapat membuat audio stream' });
+    }
+    
+    // Upload langsung ke Cloudinary
+    const result = await streamToCloudinary(audioStream.stream, 'mp3');
+    
+    // Di sini Anda bisa menyimpan hasil ke database jika diperlukan
+    // Misalnya: await Audio.create({ ... })
+    
+    return res.status(200).json({
+      success: true,
+      title: videoInfo.video_details.title,
+      url: result.secure_url,
+      filename: result.public_id,
+      duration: videoInfo.video_details.durationInSec
+    });
+    
+  } catch (error) {
+    console.error('Error:', error);
+    return res.status(500).json({
+      error: 'Terjadi kesalahan saat memproses video',
+      message: error.message
     });
   }
 };
+
