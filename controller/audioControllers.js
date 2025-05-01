@@ -11,8 +11,11 @@ import dotenv from 'dotenv';
 import path from 'path';
 import os from 'os';
 import ffmpeg from 'fluent-ffmpeg';
+import ffmpegPath from 'ffmpeg-static';
 
 
+
+ffmpeg.setFfmpegPath(ffmpegPath);
 
 // Load .env
 dotenv.config();
@@ -101,59 +104,52 @@ const extractVideoId = (url) => {
   return match && match[2].length === 11 ? match[2] : null;
 };
 
-// Main controller function for YouTube to Cloudinary conversion
 export const convertVideoToAudio = async (req, res) => {
-   if (req.method === 'POST') {
-      const { videoUrl } = req.body;
-  
-      if (!videoUrl) {
-        return res.status(400).json({ error: 'Video URL is required.' });
-      }
-  
-      try {
-        // Unduh video dari YouTube
-        const videoPath = '/tmp/video.mp4'; // Path sementara di Vercel
-        await ytdl(videoUrl, {
-          output: videoPath,
-        });
-  
-        // Konversi video ke MP3
-        const mp3Path = '/tmp/audio.mp3'; // Path untuk MP3 sementara
-        ffmpeg(videoPath)
-          .audioCodec('libmp3lame')
-          .toFormat('mp3')
-          .save(mp3Path)
-          .on('end', async () => {
-            try {
-              // Unggah MP3 ke Cloudinary
-              const uploadResponse = await cloudinary.v2.uploader.upload(mp3Path, {
-                resource_type: 'auto',
-              });
-  
-              // Hapus file lokal setelah di-upload
-              fs.unlinkSync(videoPath);
-              fs.unlinkSync(mp3Path);
-  
-              // Kirimkan URL MP3 yang di-upload
-              res.status(200).json({ message: 'File uploaded successfully.', url: uploadResponse.secure_url });
-            } catch (err) {
-              console.error('Error uploading to Cloudinary:', err);
-              res.status(500).json({ error: 'Failed to upload to Cloudinary' });
-            }
-          })
-          .on('error', (err) => {
-            console.error('Error converting video to MP3:', err);
-            res.status(500).json({ error: 'Failed to convert video to MP3' });
-          });
-      } catch (err) {
-        console.error('Error downloading video:', err);
-        res.status(500).json({ error: 'Failed to download video' });
-      }
-    } else {
-      res.status(405).json({ error: 'Method Not Allowed' });
-    }
-  
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method Not Allowed' });
+  }
+
+  const { videoUrl } = req.body;
+  if (!videoUrl) {
+    return res.status(400).json({ error: 'Video URL is required.' });
+  }
+
+  const videoPath = '/tmp/video.mp4';
+  const mp3Path = '/tmp/audio.mp3';
+
+  try {
+    // 1. Unduh video
+    await ytdl(videoUrl, { output: videoPath });
+
+    // 2. Konversi ke MP3
+    await new Promise((resolve, reject) => {
+      ffmpeg(videoPath)
+        .audioCodec('libmp3lame')
+        .toFormat('mp3')
+        .save(mp3Path)
+        .on('end', resolve)
+        .on('error', reject);
+    });
+
+    // 3. Upload ke Cloudinary
+    const uploadResponse = await cloudinary.uploader.upload(mp3Path, {
+      resource_type: 'video', // Cloudinary auto-detect mp3 sebagai "video"
+    });
+
+    // 4. Hapus file lokal
+    fs.unlinkSync(videoPath);
+    fs.unlinkSync(mp3Path);
+
+    return res.status(200).json({
+      message: 'File uploaded successfully.',
+      url: uploadResponse.secure_url,
+    });
+  } catch (err) {
+    console.error('Error in conversion flow:', err);
+    return res.status(500).json({ error: 'Internal Server Error', detail: err.message });
+  }
 };
+
 
 // ===== VIDEO INFO RETRIEVAL METHODS =====
 
