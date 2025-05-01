@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import audioRoutes from "./routes/audioRoutes.js";
 import searchRoutes from "./routes/searchRoutes.js";
-
+// import { initializeYouTubeAPI } from "./controller/audioControllers.js";
 
 // Load .env
 dotenv.config();
@@ -16,6 +16,7 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// initializeYouTubeAPI(); // Initialize YouTube API token
 
 // Body parsing
 app.use(express.json());

@@ -9,12 +9,16 @@ import {
     // TrackDownloadProgress,
     // getProcessStatusSSE,
     // checkConversionStatus
+    youtubeApiHealthCheck
 } from '../controller/audioControllers.js';
 
 const router = express.Router();
 
 // Convert video to audio
 router.post('/convert', convertVideoToAudio);
+
+// Health check for YouTube API
+router.get('/health', youtubeApiHealthCheck);
 
 // Get all audio records
 // router.get('/', GetAllAudios);
