@@ -14,7 +14,7 @@ import {
 const router = express.Router();
 
 // Convert video to audio
-router.post('/convert', convertYtToCloudinary);
+router.post('/convertAndUpload', convertYtToCloudinary);
 
 
 // Get all audio records
