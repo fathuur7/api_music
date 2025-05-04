@@ -1,17 +1,17 @@
 FROM node:18
 
-# Buat folder kerja
+# Create working directory
 WORKDIR /app
 
-# Salin dependency terlebih dahulu
+# Copy dependency files first
 COPY package.json ./
 COPY package-lock.json ./
 
-# Install dengan toleransi konflik
+# Install dependencies with options to resolve conflicts
 RUN npm install --legacy-peer-deps
 
-# Salin semua source code
+# Copy all source code
 COPY . .
 
-# Jalankan app
+# Run the app
 CMD ["node", "app.js"]
