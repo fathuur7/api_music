@@ -1,18 +1,45 @@
 [phases.setup]
-aptPkgs = ["python3", "python-is-python3", "libnss3", "libatk1.0-0", "libatk-bridge2.0-0", "libcups2", "libgbm1", "libasound2", "libpangocairo-1.0-0", "libxss1", "libgtk-3-0", "libxshmfence1", "libglu1"]
+aptPkgs = [
+  "python3", 
+  "python-is-python3", 
+  "ffmpeg",
+  "libnss3", 
+  "libatk1.0-0", 
+  "libatk-bridge2.0-0", 
+  "libcups2", 
+  "libgbm1", 
+  "libasound2", 
+  "libpangocairo-1.0-0", 
+  "libxss1", 
+  "libgtk-3-0", 
+  "libxshmfence1", 
+  "libglu1"
+]
+cmds = [
+  "pip install yt-dlp"
+]
 
 [phases.install]
 cmds = [
   "npm cache clean --force",
-  "npm install express cookie",
-  "npm install --legacy-peer-deps"
+  "npm install",
+  "npm install --save express mongoose cloudinary dotenv cors"
 ]
 
 [phases.build]
-cmds = ["npm rebuild"]
+cmds = [
+  "npm rebuild",
+  "mkdir -p /tmp/youtube-downloads",
+  "chmod 777 /tmp/youtube-downloads"
+]
 
 [start]
 cmd = "node index.js"
+healthcheck = {path = "/health", interval = "10s", timeout = "5s"}
+
+[http]
+port = 5000
+routes = {"/health" = "GET"}
 
 [variables]
 YOUTUBE_DL_SKIP_PYTHON_CHECK = "1"
