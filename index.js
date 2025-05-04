@@ -1,7 +1,6 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import cookieParser from "cookie-parser";
 import mongoose from "mongoose";
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -21,12 +20,11 @@ const __dirname = dirname(__filename);
 // Body parsing
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(cookieParser());
 
 
 // CORS setup
 app.use(cors({
-  origin: ["http://localhost:8081",'*'],
+  origin: ['*'],
   methods: ["GET", "POST", "PUT", "DELETE"],
   credentials: true,
 }));
