@@ -85,9 +85,8 @@ app.use((err, req, res, next) => {
 });
 
 // ========== Database Connection ========== //
-// MongoDB connection options with best practices
+// MongoDB connection options with up-to-date options
 const mongoOptions = {
-  autoReconnect: true,
   connectTimeoutMS: 10000,
   socketTimeoutMS: 45000,
   serverSelectionTimeoutMS: 30000,
