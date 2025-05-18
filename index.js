@@ -84,69 +84,25 @@ app.use((err, req, res, next) => {
   res.status(err.statusCode || 500).json(error);
 });
 
-// ========== Database Connection ========== //
-// MongoDB connection options with up-to-date options
-const mongoOptions = {
-  connectTimeoutMS: 10000,
-  socketTimeoutMS: 45000,
-  serverSelectionTimeoutMS: 30000,
-};
-
 // ========== Start Server ========== //
 const PORT = process.env.PORT || 3000;
 
 // Connect to MongoDB and start server
-mongoose.connect(process.env.MONGODB_URI, mongoOptions)
+mongoose.connect(process.env.MONGODB_URI)
   .then(() => {
     console.log('✅ MongoDB connected');
-    // Create MongoDB indexes for YouTube search results
-    setupYouTubeSearchIndexes();
-    
+
     // Start the server
     const server = app.listen(PORT, () => {
       console.log(`🚀 Server is running on http://localhost:${PORT}`);
     });
-
+    
     // Graceful shutdown
     process.on('SIGTERM', () => gracefulShutdown(server));
     process.on('SIGINT', () => gracefulShutdown(server));
   })
   .catch(err => console.error('❌ MongoDB connection error:', err));
 
-// Function to set up MongoDB indexes for YouTube search
-async function setupYouTubeSearchIndexes() {
-  try {
-    // Assuming you have SearchResult model with relevant collections
-    const db = mongoose.connection;
-    
-    // Index for search queries (to track popular searches)
-    await db.collection('searchqueries').createIndex({ query: 1 });
-    await db.collection('searchqueries').createIndex({ createdAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 }); // 30 days TTL
-    
-    // Index for cached YouTube search results
-    await db.collection('searchresults').createIndex({ searchQuery: 1 });
-    await db.collection('searchresults').createIndex({ videoId: 1 }, { unique: true });
-    await db.collection('searchresults').createIndex({ createdAt: 1 });
-    
-    // Text index for search within cached results
-    await db.collection('searchresults').createIndex({ 
-      title: "text", 
-      description: "text", 
-      channelTitle: "text" 
-    }, { 
-      weights: {
-        title: 10,
-        channelTitle: 5,
-        description: 3
-      },
-      name: "YouTubeSearchTextIndex"
-    });
-    
-    console.log('✅ YouTube search indexes created');
-  } catch (error) {
-    console.error('❌ Error creating YouTube search indexes:', error);
-  }
-}
 
 function gracefulShutdown(server) {
   console.log('🛑 Shutting down gracefully...');
