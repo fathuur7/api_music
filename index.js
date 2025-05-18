@@ -4,7 +4,6 @@ import dotenv from "dotenv";
 import mongoose from "mongoose";
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import audioRoutes from "./routes/audioRoutes.js";
 import searchRoutes from "./routes/searchRoutes.js";
 // import { initializeYouTubeAPI } from "./controller/audioControllers.js";
 
@@ -32,7 +31,6 @@ app.use(cors({
 
 
 // ========== Routes ========== //
-app.use('/api/audio', audioRoutes);
 app.use('/api', searchRoutes);
 
 

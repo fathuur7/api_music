@@ -1,9 +1,7 @@
 # node modules
+node_modules/
 node_modules
-
 # Environment variable
 .env
 
-# Folder hasil download audio
-controller/uploads/
-
+try/venv
